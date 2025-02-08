@@ -19,4 +19,5 @@ tokio = { workspace = true, features = ["signal"]}
 serde_json = { workspace = true }
 contender_bundle_provider = { workspace = true }
 tokio-tungstenite = "0.23.1"
+web3 = "0.19"
 url = "2.5"

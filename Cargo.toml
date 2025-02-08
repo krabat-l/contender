@@ -16,6 +16,7 @@ authors = ["Flashbots"]
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/flashbots/contender"
 repository = "https://github.com/flashbots/contender"
+web3 = "https://github.com/tomusdrw/rust-web3.git"
 
 [workspace.dependencies]
 contender_core = { path = "crates/core/" }

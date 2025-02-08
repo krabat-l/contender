@@ -105,7 +105,9 @@ where
             .as_ref()
             .map(|url| Arc::new(BundleClient::new(url.clone())));
 
-        let msg_handle = Arc::new(TxActorHandle::new(12, db.clone(), ws_url));
+        let msg_handle = Arc::new(TxActorHandle::new(12, db.clone(), ws_url)
+            .await
+            .map_err(|e| ContenderError::SetupError("failed to start tx actor", None))?);
         Ok(Self {
             config,
             db: db.clone(),
