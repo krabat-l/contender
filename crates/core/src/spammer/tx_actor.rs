@@ -167,6 +167,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     if let Some(msg) = ws_stream.next().await {
                         let msg = msg?;
                         if let Message::Text(text) = msg {
+                            println!("received: {}", text);
                             let response: WsResponse = serde_json::from_str(&text)?;
 
                             // 处理订阅确认消息
