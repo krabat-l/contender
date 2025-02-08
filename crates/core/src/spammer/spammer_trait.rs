@@ -88,12 +88,11 @@ where
                 tick += 1;
             }
 
-            let mut block_counter = 0;
             if let Some(run_id) = run_id {
                 loop {
                     let cache_size = scenario
                         .msg_handle
-                        .flush_cache(run_id, block_num + block_counter as u64)
+                        .flush_cache(run_id)
                         .await
                         .expect("failed to flush cache");
                     if cache_size == 0 {
@@ -104,8 +103,6 @@ where
                         println!("CTRL-C received, stopping result collection...");
                         break;
                     }
-
-                    block_counter += 1;
                 }
                 println!("done. run_id={}", run_id);
             }

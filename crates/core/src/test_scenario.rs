@@ -232,25 +232,32 @@ where
 
         Ok(())
     }
-
     pub async fn run_setup(&mut self) -> Result<()> {
         self.load_txs(PlanType::Setup(|tx_req| {
             /* callback */
             println!("{}", self.format_setup_log(&tx_req));
 
-            // copy data/refs from self before spawning the task
-            let from = tx_req.tx.from.as_ref().ok_or(ContenderError::SetupError(
-                "failed to get 'from' address",
-                None,
-            ))?;
-            let wallet = self
-                .wallet_map
-                .get(from)
-                .ok_or(ContenderError::SetupError(
-                    "couldn't find private key for address",
-                    from.encode_hex().into(),
-                ))?
-                .to_owned();
+            // First, extract and clone all the data we need from tx_req
+            let from = match tx_req.tx.from {
+                Some(ref addr) => addr.clone(),
+                None => return Err(ContenderError::SetupError(
+                    "failed to get 'from' address".into(),
+                    None,
+                )),
+            };
+
+            let wallet = match self.wallet_map.get(&from) {
+                Some(wallet) => wallet.clone(),
+                None => return Err(ContenderError::SetupError(
+                    "couldn't find private key for address".into(),
+                    Some(from.encode_hex()),
+                )),
+            };
+
+            // Clone other required data
+            let tx = tx_req.tx.clone();
+            let name = tx_req.name.clone();
+            let kind = tx_req.kind.clone();
             let db = self.db.clone();
             let rpc_url = self.rpc_url.clone();
 
@@ -260,47 +267,63 @@ where
                     .wallet(wallet)
                     .on_http(rpc_url.to_owned());
 
-                let chain_id = wallet.get_chain_id().await.expect("failed to get chain id");
-                let tx_label = tx_req
-                    .name
+                let tx_label = name
                     .as_deref()
-                    .or(tx_req.kind.as_deref())
+                    .or(kind.as_deref())
                     .unwrap_or("")
                     .to_string();
+
                 let gas_price = wallet.get_gas_price().await.unwrap_or_else(|_| {
                     panic!("failed to get gas price for setup step '{}'", tx_label)
                 });
-                let gas_limit = wallet.estimate_gas(&tx_req.tx).await.unwrap_or_else(|_| {
+                let gas_limit = wallet.estimate_gas(&tx).await.unwrap_or_else(|_| {
                     panic!("failed to estimate gas for setup step '{}'", tx_label)
                 });
-                let tx = tx_req
-                    .tx
+
+                // 计算所需总费用 (使用 U256)
+                let value = tx.value.unwrap_or_default();
+
+                // 检查余额
+                let balance = wallet.get_balance(from).await.unwrap_or_else(|e| {
+                    panic!("Failed to get balance for address {:?}: {:?}", from, e)
+                });
+
+                // 打印余额信息
+                println!("Account balance check for tx '{}':", tx_label);
+                println!("  Address: {:?}", from);
+                println!("  Current balance: {} wei", balance);
+                println!("  Gas price: {} wei", gas_price);
+                println!("  Gas limit: {}", gas_limit);
+                println!("  Transfer value: {} wei", value);
+
+                let chain_id = wallet.get_chain_id().await.expect("failed to get chain id");
+                let tx = tx
                     .with_gas_price(gas_price)
                     .with_chain_id(chain_id)
                     .with_gas_limit(gas_limit);
-                let res = wallet
-                    .send_transaction(tx)
-                    .await
-                    .unwrap_or_else(|_| panic!("failed to send setup tx '{}'", tx_label));
 
-                // get receipt using provider (not wallet) to allow any receipt type (support non-eth chains)
-                let receipt = res
-                    .get_receipt()
-                    .await
-                    .unwrap_or_else(|_| panic!("failed to get receipt for tx '{}'", tx_label));
+                let res = wallet.send_transaction(tx).await.unwrap_or_else(|e| {
+                    eprintln!("Failed to send setup tx '{}'. Error: {:?}", tx_label, e);
+                    panic!("Failed to send setup tx '{}': {:?}", tx_label, e);
+                });
 
-                if let Some(name) = tx_req.name {
+                let receipt = res.get_receipt().await.unwrap_or_else(|e| {
+                    eprintln!("Failed to get receipt for tx '{}'. Error: {:?}", tx_label, e);
+                    panic!("Failed to get receipt for tx '{}': {:?}", tx_label, e);
+                });
+
+                if let Some(name) = name {
                     db.insert_named_txs(
                         NamedTx::new(name, receipt.transaction_hash, receipt.contract_address)
                             .into(),
                         rpc_url.as_str(),
                     )
-                    .expect("failed to insert tx into db");
+                        .expect("failed to insert tx into db");
                 }
             });
             Ok(Some(handle))
         }))
-        .await?;
+            .await?;
 
         self.sync_nonces().await?;
 
