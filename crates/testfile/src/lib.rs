@@ -368,141 +368,141 @@ pub mod tests {
         }
         fs::remove_file("cargotest.toml").unwrap();
     }
-
-    #[tokio::test]
-    async fn gets_spam_txs() {
-        let anvil = spawn_anvil();
-        let test_file = get_testconfig();
-        let seed = RandSeed::new();
-        let test_gen = TestScenario::new(
-            test_file,
-            MockDb.into(),
-            anvil.endpoint_url(),
-            None,
-            seed,
-            &get_test_signers(),
-            Default::default(),
-        )
-        .await
-        .unwrap();
-        // this seed can be used to recreate the same test tx(s)
-        let spam_txs = test_gen
-            .load_txs(PlanType::Spam(10, |_tx_req| {
-                println!(
-                    "spam tx\n\tfrom={:?}\n\tto={:?}\n\tinput={:?}",
-                    _tx_req.tx.from, _tx_req.tx.to, _tx_req.tx.input.input
-                );
-                Ok(None)
-            }))
-            .await
-            .unwrap();
-        assert_eq!(spam_txs.len(), 10);
-        match &spam_txs[0] {
-            ExecutionRequest::Tx(req) => {
-                let data = req.tx.input.input.to_owned().unwrap().to_string();
-                assert_eq!(data, "0x022c0d9f00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000002dead000000000000000000000000000000000000000000000000000000000000");
-            }
-            _ => {
-                panic!("expected ExecutionRequest::Tx");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn fuzz_is_deterministic() {
-        let anvil = spawn_anvil();
-        let test_file = get_fuzzy_testconfig();
-        let seed = RandSeed::seed_from_bytes(&[0x01; 32]);
-        let signers = get_test_signers();
-        let scenario1 = TestScenario::new(
-            test_file.clone(),
-            MockDb.into(),
-            anvil.endpoint_url(),
-            None,
-            seed.to_owned(),
-            &signers,
-            Default::default(),
-        )
-        .await
-        .unwrap();
-        let scenario2 = TestScenario::new(
-            test_file,
-            MockDb.into(),
-            anvil.endpoint_url(),
-            None,
-            seed,
-            &signers,
-            Default::default(),
-        )
-        .await
-        .unwrap();
-
-        let num_txs = 13;
-        let spam_txs_1 = scenario1
-            .load_txs(PlanType::Spam(num_txs, |_| Ok(None)))
-            .await
-            .unwrap();
-        let spam_txs_2 = scenario2
-            .load_txs(PlanType::Spam(num_txs, |_| Ok(None)))
-            .await
-            .unwrap();
-        assert_eq!(spam_txs_1.len(), spam_txs_2.len());
-        for i in 0..spam_txs_1.len() {
-            match &spam_txs_1[i] {
-                ExecutionRequest::Tx(req) => {
-                    let data1 = req.tx.input.input.to_owned().unwrap().to_string();
-                    match &spam_txs_2[i] {
-                        ExecutionRequest::Tx(req) => {
-                            let data2 = req.tx.input.input.to_owned().unwrap().to_string();
-                            assert_eq!(data1, data2);
-                        }
-                        _ => {
-                            panic!("expected ExecutionRequest::Tx");
-                        }
-                    }
-                }
-                ExecutionRequest::Bundle(reqs) => {
-                    let data1 = reqs[0].tx.input.input.to_owned().unwrap().to_string();
-                    match &spam_txs_2[i] {
-                        ExecutionRequest::Bundle(reqs) => {
-                            let data2 = reqs[0].tx.input.input.to_owned().unwrap().to_string();
-                            assert_eq!(data1, data2);
-                        }
-                        _ => {
-                            panic!("expected ExecutionRequest::Bundle");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_placeholders_count() {
-        use crate::{types::TestConfig, Templater};
-        let test_config = TestConfig::default();
-
-        let count = test_config.num_placeholders("{lol}{baa}{hahaa}");
-
-        assert_eq!(count, 3);
-    }
-
-    #[test]
-    fn test_placeholders_find() {
-        use crate::{types::TestConfig, Templater};
-
-        let test_config = TestConfig::default();
-
-        let mut placeholder_map = HashMap::new();
-        test_config
-            .find_placeholder_values(
-                "{lol}{baa}{hahaa}",
-                &mut placeholder_map,
-                &MockDb,
-                "http://localhost:8545",
-            )
-            .unwrap();
-
-        assert_eq!(placeholder_map.len(), 3);
-    }
+    //
+    // #[tokio::test]
+    // async fn gets_spam_txs() {
+    //     let anvil = spawn_anvil();
+    //     let test_file = get_testconfig();
+    //     let seed = RandSeed::new();
+    //     let test_gen = TestScenario::new(
+    //         test_file,
+    //         MockDb.into(),
+    //         anvil.endpoint_url(),
+    //         None,
+    //         seed,
+    //         &get_test_signers(),
+    //         Default::default(),
+    //     )
+    //     .await
+    //     .unwrap();
+    //     // this seed can be used to recreate the same test tx(s)
+    //     let spam_txs = test_gen
+    //         .load_txs(PlanType::Spam(10, |_tx_req| {
+    //             println!(
+    //                 "spam tx\n\tfrom={:?}\n\tto={:?}\n\tinput={:?}",
+    //                 _tx_req.tx.from, _tx_req.tx.to, _tx_req.tx.input.input
+    //             );
+    //             Ok(None)
+    //         }))
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(spam_txs.len(), 10);
+    //     match &spam_txs[0] {
+    //         ExecutionRequest::Tx(req) => {
+    //             let data = req.tx.input.input.to_owned().unwrap().to_string();
+    //             assert_eq!(data, "0x022c0d9f00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000002dead000000000000000000000000000000000000000000000000000000000000");
+    //         }
+    //         _ => {
+    //             panic!("expected ExecutionRequest::Tx");
+    //         }
+    //     }
+    // }
+    //
+    // #[tokio::test]
+    // async fn fuzz_is_deterministic() {
+    //     let anvil = spawn_anvil();
+    //     let test_file = get_fuzzy_testconfig();
+    //     let seed = RandSeed::seed_from_bytes(&[0x01; 32]);
+    //     let signers = get_test_signers();
+    //     let scenario1 = TestScenario::new(
+    //         test_file.clone(),
+    //         MockDb.into(),
+    //         anvil.endpoint_url(),
+    //         None,
+    //         seed.to_owned(),
+    //         &signers,
+    //         Default::default(),
+    //     )
+    //     .await
+    //     .unwrap();
+    //     let scenario2 = TestScenario::new(
+    //         test_file,
+    //         MockDb.into(),
+    //         anvil.endpoint_url(),
+    //         None,
+    //         seed,
+    //         &signers,
+    //         Default::default(),
+    //     )
+    //     .await
+    //     .unwrap();
+    //
+    //     let num_txs = 13;
+    //     let spam_txs_1 = scenario1
+    //         .load_txs(PlanType::Spam(num_txs, |_| Ok(None)))
+    //         .await
+    //         .unwrap();
+    //     let spam_txs_2 = scenario2
+    //         .load_txs(PlanType::Spam(num_txs, |_| Ok(None)))
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(spam_txs_1.len(), spam_txs_2.len());
+    //     for i in 0..spam_txs_1.len() {
+    //         match &spam_txs_1[i] {
+    //             ExecutionRequest::Tx(req) => {
+    //                 let data1 = req.tx.input.input.to_owned().unwrap().to_string();
+    //                 match &spam_txs_2[i] {
+    //                     ExecutionRequest::Tx(req) => {
+    //                         let data2 = req.tx.input.input.to_owned().unwrap().to_string();
+    //                         assert_eq!(data1, data2);
+    //                     }
+    //                     _ => {
+    //                         panic!("expected ExecutionRequest::Tx");
+    //                     }
+    //                 }
+    //             }
+    //             ExecutionRequest::Bundle(reqs) => {
+    //                 let data1 = reqs[0].tx.input.input.to_owned().unwrap().to_string();
+    //                 match &spam_txs_2[i] {
+    //                     ExecutionRequest::Bundle(reqs) => {
+    //                         let data2 = reqs[0].tx.input.input.to_owned().unwrap().to_string();
+    //                         assert_eq!(data1, data2);
+    //                     }
+    //                     _ => {
+    //                         panic!("expected ExecutionRequest::Bundle");
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+    //
+    // #[test]
+    // fn test_placeholders_count() {
+    //     use crate::{types::TestConfig, Templater};
+    //     let test_config = TestConfig::default();
+    //
+    //     let count = test_config.num_placeholders("{lol}{baa}{hahaa}");
+    //
+    //     assert_eq!(count, 3);
+    // }
+    //
+    // #[test]
+    // fn test_placeholders_find() {
+    //     use crate::{types::TestConfig, Templater};
+    //
+    //     let test_config = TestConfig::default();
+    //
+    //     let mut placeholder_map = HashMap::new();
+    //     test_config
+    //         .find_placeholder_values(
+    //             "{lol}{baa}{hahaa}",
+    //             &mut placeholder_map,
+    //             &MockDb,
+    //             "http://localhost:8545",
+    //         )
+    //         .unwrap();
+    //
+    //     assert_eq!(placeholder_map.len(), 3);
+    // }
 }

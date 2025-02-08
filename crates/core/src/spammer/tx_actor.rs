@@ -1,33 +1,23 @@
-use std::{sync::Arc, time::Duration};
-
-use alloy::{network::ReceiptResponse, primitives::TxHash, providers::Provider};
-use alloy::pubsub::Subscription;
-use futures::stream::Stream;
-use futures::stream::StreamExt;
+use std::sync::Arc;
+use futures::{StreamExt, SinkExt};
+use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::Message,
+    WebSocketStream,
+    MaybeTlsStream,
+};
+use tokio::net::TcpStream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use serde_json::value::RawValue;
-use tokio::sync::{mpsc, oneshot};
+use alloy::primitives::TxHash;
 
 use crate::{
     db::{DbOps, RunTx},
     error::ContenderError,
-    generator::types::AnyProvider,
 };
 
-enum TxActorMessage {
-    SentRunTx {
-        tx_hash: TxHash,
-        start_timestamp: usize,
-        kind: Option<String>,
-        on_receipt: oneshot::Sender<()>,
-    },
-    FlushCache {
-        run_id: u64,
-        on_flush: oneshot::Sender<usize>,
-    },
-}
-
+// WebSocket 相关的数据结构保持不变...
 #[derive(Debug, Serialize)]
 struct SubscriptionRequest {
     jsonrpc: String,
@@ -37,8 +27,22 @@ struct SubscriptionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct WsResponse {
+    jsonrpc: String,
+    id: Option<u64>,
+    result: Option<String>,
+    method: Option<String>,
+    params: Option<WsParams>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WsParams {
+    subscription: String,
+    result: FragmentResponse,
+}
+
+#[derive(Debug, Deserialize)]
 struct FragmentResponse {
-    id: u64,
     payload_id: String,
     block_number: u64,
     index: u64,
@@ -52,18 +56,21 @@ struct FragmentResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct TransactionSigned {
-    /// Transaction hash
     pub hash: TxHash,
 }
 
-struct TxActor<D>
-where
-    D: DbOps,
-{
-    receiver: mpsc::Receiver<TxActorMessage>,
-    db: Arc<D>,
-    cache: Vec<PendingRunTx>,
-    rpc: Arc<AnyProvider>,
+// TxActorMessage 和 PendingRunTx 保持不变...
+enum TxActorMessage {
+    SentRunTx {
+        tx_hash: TxHash,
+        start_timestamp: usize,
+        kind: Option<String>,
+        on_receipt: oneshot::Sender<()>,
+    },
+    FlushCache {
+        run_id: u64,
+        on_flush: oneshot::Sender<usize>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,21 +90,44 @@ impl PendingRunTx {
     }
 }
 
-impl<D> TxActor<D>
-where
-    D: DbOps + Send + Sync + 'static,
-{
+struct TxActor<D> where D: DbOps {
+    receiver: mpsc::Receiver<TxActorMessage>,
+    db: Arc<D>,
+    cache: Vec<PendingRunTx>,
+    ws_url: String,
+}
+
+impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     pub fn new(
         receiver: mpsc::Receiver<TxActorMessage>,
         db: Arc<D>,
-        rpc: Arc<AnyProvider>,
+        ws_url: String,
     ) -> Self {
         Self {
             receiver,
             db,
             cache: Vec::new(),
-            rpc,
+            ws_url,
         }
+    }
+
+    async fn subscribe_to_fragments(&self) -> Result<impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>, Box<dyn std::error::Error>> {
+        // 直接使用字符串 URL
+        let (ws_stream, _) = connect_async(&self.ws_url).await?;
+        let (mut write, read) = ws_stream.split();
+
+        // 发送 fragments 订阅请求
+        let subscribe_req = SubscriptionRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "eth_subscribe".to_string(),
+            params: vec!["fragments".to_string()],
+        };
+
+        let msg = Message::Text(serde_json::to_string(&subscribe_req)?);
+        write.send(msg).await?;
+
+        Ok(read)
     }
 
     async fn handle_message(
@@ -116,80 +146,83 @@ where
                     start_timestamp,
                     kind,
                 };
-                self.cache.push(run_tx.to_owned());
+                self.cache.push(run_tx);
                 on_receipt.send(()).map_err(|_| {
                     ContenderError::SpamError("failed to join TxActor callback", None)
                 })?;
             }
-            TxActorMessage::FlushCache { on_flush, run_id } => {
+            TxActorMessage::FlushCache { run_id, on_flush } => {
                 println!("unconfirmed txs: {}", self.cache.len());
 
-                let subscribe_request = SubscriptionRequest {
-                    jsonrpc: "2.0".to_string(),
-                    id: 1,
-                    method: "eth_subscribe".to_string(),
-                    params: vec!["fragments".to_string()],
-                };
+                if self.cache.is_empty() {
+                    on_flush.send(0).map_err(|_| {
+                        ContenderError::SpamError("failed to join TxActor on_flush", None)
+                    })?;
+                    return Ok(());
+                }
 
-                // Subscribe to Fragments
-                let raw_subscription = self.rpc.subscribe(json!(subscribe_request)).await?;
-                let mut subscription: Subscription<Box<RawValue>> = Subscription::from(raw_subscription);
-                let mut stream = subscription.into_stream();
+                let mut ws_stream = self.subscribe_to_fragments().await?;
 
-                while let Some(result) = stream.next().await {
+                while !self.cache.is_empty() {
+                    if let Some(msg) = ws_stream.next().await {
+                        let msg = msg?;
+                        if let Message::Text(text) = msg {
+                            let response: WsResponse = serde_json::from_str(&text)?;
 
-                    let fragment: FragmentResponse = serde_json::from_str(result.get())?;
-
-                        // Get confirmed transaction hashes from the fragment
-                    let confirmed_tx_hashes: Vec<TxHash> = fragment.transactions
-                        .iter()
-                        .map(|tx| tx.hash)
-                        .collect();
-
-                        // Filter cache for confirmed transactions
-                    let confirmed_txs: Vec<PendingRunTx> = self.cache
-                        .iter()
-                        .filter(|tx| confirmed_tx_hashes.contains(&tx.tx_hash))
-                        .cloned()
-                        .collect();
-
-                    // Update cache to remove confirmed transactions
-                    self.cache.retain(|tx| !confirmed_tx_hashes.contains(&tx.tx_hash));
-
-                    // Create RunTx entries for confirmed transactions
-                    let run_txs = confirmed_txs.clone()
-                        .into_iter()
-                        .map(|pending_tx| {
-                            let tx = fragment.transactions
-                                .iter()
-                                .find(|t| t.hash == pending_tx.tx_hash)
-                                .expect("Transaction must exist in fragment");
-
-                            RunTx {
-                                tx_hash: pending_tx.tx_hash,
-                                start_timestamp: pending_tx.start_timestamp / 1000,
-                                end_timestamp: fragment.timestamp as usize,
-                                block_number: fragment.block_number,
-                                gas_used: fragment.gas_used as u128,
-                                kind: pending_tx.kind,
+                            // 处理订阅确认消息
+                            if response.id.is_some() {
+                                continue;
                             }
-                        })
-                        .collect::<Vec<_>>();
 
-                    // Insert confirmed transactions into database
-                    if !run_txs.is_empty() {
-                        self.db.insert_run_txs(run_id, run_txs)?;
+                            if let Some(params) = response.params {
+                                let fragment = params.result;
 
-                        for tx in &confirmed_txs {
-                            println!(
-                                "tx landed. hash={}\tblock_num={}",
-                                tx.tx_hash,
-                                fragment.block_number
-                            );
+                                // 获取已确认的交易哈希
+                                let confirmed_tx_hashes: Vec<TxHash> = fragment.transactions
+                                    .iter()
+                                    .map(|tx| tx.hash)
+                                    .collect();
+
+                                // 从缓存中找出已确认的交易
+                                let confirmed_txs: Vec<PendingRunTx> = self.cache
+                                    .iter()
+                                    .filter(|tx| confirmed_tx_hashes.contains(&tx.tx_hash))
+                                    .cloned()
+                                    .collect();
+
+                                // 更新缓存，移除已确认的交易
+                                self.cache.retain(|tx| !confirmed_tx_hashes.contains(&tx.tx_hash));
+
+                                // 创建RunTx条目
+                                let run_txs = confirmed_txs.clone().into_iter()
+                                    .map(|pending_tx| {
+                                        RunTx {
+                                            tx_hash: pending_tx.tx_hash,
+                                            start_timestamp: pending_tx.start_timestamp / 1000,
+                                            end_timestamp: fragment.timestamp as usize,
+                                            block_number: fragment.block_number,
+                                            gas_used: fragment.gas_used as u128,
+                                            kind: pending_tx.kind,
+                                        }
+                                    })
+                                    .collect::<Vec<_>>();
+
+                                // 将确认的交易写入数据库
+                                if !run_txs.is_empty() {
+                                    self.db.insert_run_txs(run_id, run_txs)?;
+
+                                    for tx in &confirmed_txs {
+                                        println!(
+                                            "tx landed. hash={}\tblock_num={}",
+                                            tx.tx_hash,
+                                            fragment.block_number
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
 
-                    // If cache is empty, we can break the subscription loop
                     if self.cache.is_empty() {
                         break;
                     }
@@ -220,10 +253,10 @@ impl TxActorHandle {
     pub fn new<D: DbOps + Send + Sync + 'static>(
         bufsize: usize,
         db: Arc<D>,
-        rpc: Arc<AnyProvider>,
+        ws_url: String,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(bufsize);
-        let mut actor = TxActor::new(receiver, db, rpc);
+        let mut actor = TxActor::new(receiver, db, ws_url);
         tokio::task::spawn(async move {
             actor.run().await.expect("tx actor crashed");
         });

@@ -22,6 +22,9 @@ pub enum ContenderSubcommand {
         /// The HTTP JSON-RPC URL to spam with requests.
         rpc_url: String,
 
+        /// The WS JSON-RPC URL to spam with requests.
+        ws_url: String,
+
         /// HTTP JSON-RPC URL to use for bundle spamming (must support `eth_sendBundle`).
         #[arg(
             short,
@@ -110,6 +113,9 @@ May be specified multiple times."
         /// The HTTP JSON-RPC URL to use for setup.
         rpc_url: String,
 
+        /// The WS JSON-RPC URL to use for setup.
+        ws_url: String,
+
         /// The private keys to use for setup.
         #[arg(
             short,
@@ -166,6 +172,9 @@ May be specified multiple times."
 
         /// The HTTP JSON-RPC URL to target with the scenario.
         rpc_url: String,
+
+        /// The WebSocket URL to target with the scenario.
+        ws_url: String,
 
         #[arg(
             short,

@@ -9,6 +9,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     transports::http::reqwest::Url,
 };
+use alloy::providers::WsConnect;
 use contender_core::{
     agent_controller::{AgentStore, SignerStore},
     db::DbOps,
@@ -28,6 +29,7 @@ use crate::util::{
 pub struct SpamCommandArgs {
     pub testfile: String,
     pub rpc_url: String,
+    pub ws_url: String,
     pub builder_url: Option<String>,
     pub txs_per_block: Option<usize>,
     pub txs_per_second: Option<usize>,
@@ -45,11 +47,12 @@ pub async fn spam(
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let testconfig = TestConfig::from_file(&args.testfile)?;
     let rand_seed = RandSeed::seed_from_str(&args.seed);
-    let url = Url::parse(&args.rpc_url).expect("Invalid RPC URL");
+    let rpc_url = Url::parse(&args.rpc_url).expect("Invalid RPC URL");
+    let ws_url = args.ws_url;
     let rpc_client = ProviderBuilder::new()
         .network::<AnyNetwork>()
-        .on_http(url.to_owned());
-    let eth_client = ProviderBuilder::new().on_http(url.to_owned());
+        .on_http(rpc_url.to_owned());
+    let eth_client = ProviderBuilder::new().on_http(rpc_url.to_owned());
 
     let duration = args.duration.unwrap_or_default();
     let min_balance = parse_ether(&args.min_balance)?;
@@ -134,7 +137,8 @@ pub async fn spam(
     let mut scenario = TestScenario::new(
         testconfig,
         db.clone().into(),
-        url,
+        rpc_url,
+        ws_url,
         args.builder_url
             .map(|url| Url::parse(&url).expect("Invalid builder URL")),
         rand_seed,

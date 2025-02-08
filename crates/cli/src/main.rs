@@ -50,6 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ContenderSubcommand::Setup {
             testfile,
             rpc_url,
+            ws_url,
             private_keys,
             min_balance,
             seed,
@@ -59,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &db,
                 testfile,
                 rpc_url,
+                ws_url,
                 private_keys,
                 min_balance,
                 RandSeed::seed_from_str(&seed),
@@ -69,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ContenderSubcommand::Spam {
             testfile,
             rpc_url,
+            ws_url,
             builder_url,
             txs_per_block,
             txs_per_second,
@@ -85,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SpamCommandArgs {
                     testfile,
                     rpc_url: rpc_url.to_owned(),
+                    ws_url: ws_url.to_owned(),
                     builder_url,
                     txs_per_block,
                     txs_per_second,
@@ -112,6 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ContenderSubcommand::Run {
             scenario,
             rpc_url,
+            ws_url,
             private_key,
             interval,
             duration,
@@ -121,6 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &db,
                 scenario,
                 rpc_url,
+                ws_url,
                 private_key,
                 interval,
                 duration,

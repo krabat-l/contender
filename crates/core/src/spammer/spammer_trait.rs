@@ -23,9 +23,9 @@ where
     S: Seeder + Send + Sync,
     P: PlanConfig<String> + Templater<String> + Send + Sync,
 {
-    fn get_msg_handler(&self, db: Arc<D>, rpc_client: Arc<AnyProvider>) -> TxActorHandle {
-        TxActorHandle::new(12, db.clone(), rpc_client.clone())
-    }
+    // fn get_msg_handler(&self, db: Arc<D>, rpc_client: Arc<AnyProvider>) -> TxActorHandle {
+    //     TxActorHandle::new(12, db.clone(), rpc_client.clone())
+    // }
 
     fn on_spam(
         &self,
