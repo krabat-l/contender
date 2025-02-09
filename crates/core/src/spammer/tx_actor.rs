@@ -43,10 +43,6 @@ enum TxActorMessage {
         kind: Option<String>,
         on_receipt: oneshot::Sender<()>,
     },
-    FlushCache {
-        run_id: u64,
-        on_flush: oneshot::Sender<usize>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +67,9 @@ struct TxActor<D> where D: DbOps {
     db: Arc<D>,
     cache: Vec<PendingRunTx>,
     read: SplitStream<WebSocketStream<ConnectStream>>,
+    run_id: Option<u64>,
+    expected_tx_count: Option<usize>,
+    confirmed_count: usize,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -78,17 +77,24 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         receiver: mpsc::Receiver<TxActorMessage>,
         db: Arc<D>,
         ws_url: Url,
+        run_id: u64,
+        expected_tx_count: usize,
     ) -> Self {
         let (ws_stream, _) = connect_async(ws_url).await.expect("failed to connect to WS server");
-        let (mut write, mut read) = ws_stream.split();
+        let (mut write, read) = ws_stream.split();
         let subscribe_message = r#"{"jsonrpc":"2.0","method":"eth_subscribe","params":["fragments"],"id":1}"#;
-        write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into())).await.expect("failed to send subscribe message");
+        write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
+            .await
+            .expect("failed to send subscribe message");
 
         Self {
             receiver,
             db,
             cache: Vec::new(),
             read,
+            run_id: Some(run_id),
+            expected_tx_count: Some(expected_tx_count),
+            confirmed_count: 0,
         }
     }
 
@@ -136,6 +142,76 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         println!("--------------------------------\n");
     }
 
+    async fn process_ws_message(&mut self, text: String) -> Result<bool, Box<dyn Error>> {
+        match serde_json::from_str::<Value>(&text) {
+            Ok(json) => {
+                if let Some(result) = json["params"]["result"].as_object() {
+                    let block_number = result["block_number"].as_u64().unwrap_or_default();
+                    let fragment_index = result["index"].as_u64().unwrap_or_default();
+                    let gas_used = result["gas_used"].as_u64().unwrap_or_default();
+
+                    if let Some(transactions) = result["transactions"].as_array() {
+                        let confirmed_tx_hashes: Vec<TxHash> = transactions
+                            .iter()
+                            .filter_map(|tx| tx["hash"].as_str())
+                            .filter_map(|hash_str| {
+                                let hash_str = hash_str.strip_prefix("0x").unwrap_or(hash_str);
+                                hex::decode(hash_str)
+                                    .ok()
+                                    .map(|bytes| TxHash::from_slice(&bytes))
+                            })
+                            .collect();
+
+                        let confirmed_txs: Vec<PendingRunTx> = self.cache
+                            .iter()
+                            .filter(|tx| confirmed_tx_hashes.contains(&tx.tx_hash))
+                            .cloned()
+                            .collect();
+
+                        if !confirmed_txs.is_empty() {
+                            println!("confirmed {} txs at block {}, fragments {}",
+                                     confirmed_txs.len(), block_number, fragment_index);
+                        }
+
+                        if let (Some(run_id), Some(expected_count)) = (self.run_id, self.expected_tx_count) {
+                            let timestamp_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .expect("Time went backwards")
+                                .as_millis();
+
+                            // Remove confirmed transactions from cache
+                            self.cache.retain(|tx| !confirmed_tx_hashes.contains(&tx.tx_hash));
+
+                            let run_txs = confirmed_txs
+                                .into_iter()
+                                .map(|pending_tx| RunTx {
+                                    tx_hash: pending_tx.tx_hash,
+                                    start_timestamp: pending_tx.start_timestamp,
+                                    end_timestamp: timestamp_ms as usize,
+                                    block_number,
+                                    gas_used: u128::from(gas_used),
+                                    kind: pending_tx.kind,
+                                })
+                                .collect::<Vec<_>>();
+
+                            if !run_txs.is_empty() {
+                                self.db.insert_run_txs(run_id, run_txs.clone())?;
+                                self.confirmed_count += run_txs.len();
+
+                                if self.confirmed_count >= expected_count {
+                                    println!("Reached expected transaction count: {}", expected_count);
+                                    return Ok(true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("Failed to parse JSON: {:?}", e),
+        }
+        Ok(false)
+    }
+
     async fn handle_message(
         &mut self,
         message: TxActorMessage,
@@ -147,7 +223,10 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 kind,
                 on_receipt,
             } => {
-                let start_timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("Time went backwards").as_millis() as usize;
+                let start_timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_millis() as usize;
                 let run_tx = PendingRunTx {
                     tx_hash,
                     start_timestamp,
@@ -160,109 +239,25 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 let now = Local::now();
                 println!("Current date and time: {}", now.format("%Y-%m-%d %H:%M:%S%.3f"));
             }
-            TxActorMessage::FlushCache { run_id, on_flush } => {
-                println!("unconfirmed txs: {}", self.cache.len());
-                let now = Local::now();
-                println!("Current date and time: {}", now.format("%Y-%m-%d %H:%M:%S%.3f"));
-
-                if self.cache.is_empty() {
-                    on_flush.send(0).map_err(|_| {
-                        ContenderError::SpamError("failed to join TxActor on_flush", None)
-                    })?;
-                    return Ok(());
-                }
-
-                let mut all_run_txs = Vec::new();
-
-
-                while !self.cache.is_empty() {
-                    while let Some(message) = self.read.next().await {
-                        match message? {
-                            async_tungstenite::tungstenite::Message::Text(text) => {
-                                // Deserialize the JSON message
-                                match serde_json::from_str::<Value>(&text) {
-                                    Ok(json) => {
-                                        if let Some(result) = json["params"]["result"].as_object() {
-                                            let block_number = result["block_number"].as_u64().unwrap_or_default();
-                                            let fragment_index = result["index"].as_u64().unwrap_or_default();
-                                            let gas_used = result["gas_used"].as_u64().unwrap_or_default();
-                                            // Extract and print the number of transactions
-                                            if let Some(transactions) = result["transactions"].as_array() {
-                                                let confirmed_tx_hashes: Vec<TxHash> = transactions
-                                                    .iter()
-                                                    .filter_map(|tx| tx["hash"].as_str())
-                                                    .filter_map(|hash_str| {
-                                                        let hash_str = hash_str.strip_prefix("0x").unwrap_or(hash_str);
-                                                        match hex::decode(hash_str) {
-                                                            Ok(bytes) => Some(TxHash::from_slice(&bytes)),
-                                                            Err(e) => {
-                                                                eprintln!("Failed to decode hex hash {}: {:?}", hash_str, e);
-                                                                None
-                                                            }
-                                                        }
-                                                    })
-                                                    .collect();
-                                                let confirmed_txs: Vec<PendingRunTx> = self.cache
-                                                    .iter()
-                                                    .filter(|tx| confirmed_tx_hashes.contains(&tx.tx_hash))
-                                                    .cloned()
-                                                    .collect();
-                                                println!("confirmed txs{} at block {}, fragments {}", confirmed_txs.len(), block_number, fragment_index);
-                                                let timestamp_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("Time went backwards").as_millis();
-                                                self.cache.retain(|tx| !confirmed_tx_hashes.contains(&tx.tx_hash));
-                                                let run_txs = confirmed_txs.clone().into_iter()
-                                                    .map(|pending_tx| {
-                                                        RunTx {
-                                                            tx_hash: pending_tx.tx_hash,
-                                                            start_timestamp: pending_tx.start_timestamp,
-                                                            end_timestamp: timestamp_ms as usize,
-                                                            block_number,
-                                                            gas_used: u128::from(gas_used),
-                                                            kind: pending_tx.kind,
-                                                        }
-                                                    })
-                                                    .collect::<Vec<_>>();
-                                                if !run_txs.is_empty() {
-                                                    all_run_txs.extend(run_txs.clone());
-                                                    self.db.insert_run_txs(run_id, run_txs)?;
-
-                                                    // for tx in &confirmed_txs {
-                                                    //     println!(
-                                                    //         "tx landed. hash={}\tblock_num={}",
-                                                    //         tx.tx_hash,
-                                                    //         block_number,
-                                                    //     );
-                                                    // }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => eprintln!("Failed to parse JSON: {:?}", e),
-                                }
-                            }
-                            _ => {}
-                        }
-                        if self.cache.is_empty() {
-                            break;
-                        }
-                    }
-                }
-
-                if !all_run_txs.is_empty() {
-                    Self::print_stats(&all_run_txs);
-                }
-
-                on_flush.send(self.cache.len()).map_err(|_| {
-                    ContenderError::SpamError("failed to join TxActor on_flush", None)
-                })?;
-            }
         }
         Ok(())
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        while let Some(msg) = self.receiver.recv().await {
-            self.handle_message(msg).await?;
+        loop {
+            tokio::select! {
+                Some(msg) = self.receiver.recv() => {
+                    self.handle_message(msg).await?;
+                }
+                Some(Ok(message)) = self.read.next() => {
+                    if let async_tungstenite::tungstenite::Message::Text(text) = message {
+                        if self.process_ws_message(text).await? {
+                            break;
+                        }
+                    }
+                }
+                else => break,
+            }
         }
         Ok(())
     }
@@ -278,9 +273,11 @@ impl TxActorHandle {
         bufsize: usize,
         db: Arc<D>,
         ws_url: Url,
+        run_id: u64,
+        expected_tx_count: usize,
     ) -> Result<Self, Box<dyn Error>> {
         let (sender, receiver) = mpsc::channel(bufsize);
-        let mut actor = TxActor::new(receiver, db, ws_url).await;
+        let mut actor = TxActor::new(receiver, db, ws_url, run_id, expected_tx_count).await;
         tokio::task::spawn(async move {
             actor.run().await.expect("tx actor crashed");
         });
@@ -304,19 +301,5 @@ impl TxActorHandle {
             .await?;
         receiver.await?;
         Ok(())
-    }
-
-    pub async fn flush_cache(
-        &self,
-        run_id: u64,
-    ) -> Result<usize, Box<dyn std::error::Error>> {
-        let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(TxActorMessage::FlushCache {
-                run_id,
-                on_flush: sender,
-            })
-            .await?;
-        Ok(receiver.await?)
     }
 }

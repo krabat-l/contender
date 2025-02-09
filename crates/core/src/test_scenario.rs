@@ -64,6 +64,8 @@ where
         rand_seed: S,
         signers: &[PrivateKeySigner],
         agent_store: AgentStore,
+        run_id: u64,
+        expected_tx_count: usize,
     ) -> Result<Self> {
         let rpc_client = Arc::new(
             ProviderBuilder::new()
@@ -105,7 +107,7 @@ where
             .as_ref()
             .map(|url| Arc::new(BundleClient::new(url.clone())));
 
-        let msg_handle = Arc::new(TxActorHandle::new(12, db.clone(), ws_url)
+        let msg_handle = Arc::new(TxActorHandle::new(12, db.clone(), ws_url, run_id, expected_tx_count)
             .await
             .map_err(|e| ContenderError::SetupError("failed to start tx actor", None))?);
         Ok(Self {

@@ -65,6 +65,18 @@ pub async fn run(
 
     let rpc_url = Url::parse(&rpc_url).expect("Invalid RPC URL");
     let ws_url = Url::parse(&ws_url).expect("Invalid WS URL");
+
+    let contract_name = "SpamMe";
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis();
+    let expected_tx_count = txs_per_duration * duration;
+    let run_id = db.insert_run(
+        timestamp as u64,
+        duration * txs_per_duration,
+        &format!("{} ({})", contract_name, scenario_name),
+    )?;
     let mut scenario = TestScenario::new(
         testconfig,
         db.clone().into(),
@@ -74,10 +86,11 @@ pub async fn run(
         rand_seed,
         &user_signers,
         AgentStore::default(),
+        run_id,
+        expected_tx_count,
     )
     .await?;
 
-    let contract_name = "SpamMe";
     let contract_result = db.get_named_tx(contract_name, rpc_url.as_str())?;
     let do_deploy_contracts = if contract_result.is_some() {
         let input = prompt_cli(format!(
@@ -99,15 +112,6 @@ pub async fn run(
 
     let wait_duration = std::time::Duration::from_secs(interval as u64);
     let spammer = TimedSpammer::new(wait_duration);
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis();
-    let run_id = db.insert_run(
-        timestamp as u64,
-        duration * txs_per_duration,
-        &format!("{} ({})", contract_name, scenario_name),
-    )?;
     let callback = LogCallback::new(Arc::new(
         ProviderBuilder::new()
             .network::<AnyNetwork>()
@@ -120,7 +124,6 @@ pub async fn run(
             &mut scenario,
             txs_per_duration,
             duration,
-            Some(run_id),
             callback.into(),
         )
         .await?;

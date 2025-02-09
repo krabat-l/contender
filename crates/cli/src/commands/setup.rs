@@ -120,6 +120,8 @@ pub async fn setup(
         seed,
         &user_signers_with_defaults,
         agents,
+        0,
+        0,
     )
     .await?;
 

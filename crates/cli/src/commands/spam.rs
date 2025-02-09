@@ -133,91 +133,101 @@ pub async fn spam(
     .await?;
 
     let mut run_id = 0;
-
-    let mut scenario = TestScenario::new(
-        testconfig,
-        db.clone().into(),
-        rpc_url,
-        ws_url,
-        args.builder_url
-            .map(|url| Url::parse(&url).expect("Invalid builder URL")),
-        rand_seed,
-        &user_signers,
-        agents,
-    )
-    .await?;
-
-    let total_cost =
-        get_max_spam_cost(scenario.to_owned(), &rpc_client).await? * U256::from(duration);
-    if min_balance < U256::from(total_cost) {
-        return Err(ContenderError::SpamError(
-            "min_balance is not enough to cover the cost of the spam transactions",
-            format!(
-                "min_balance: {}, total_cost: {}",
-                format_ether(min_balance),
-                format_ether(total_cost)
-            )
-            .into(),
+    if let Some(txs_per_block) = args.txs_per_block {
+        let expected_tx_count = txs_per_block * duration;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis();
+        run_id =
+            db.insert_run(timestamp as u64, txs_per_block * duration, &args.testfile)?;
+        let mut scenario = TestScenario::new(
+            testconfig,
+            db.clone().into(),
+            rpc_url,
+            ws_url,
+            args.builder_url
+                .map(|url| Url::parse(&url).expect("Invalid builder URL")),
+            rand_seed,
+            &user_signers,
+            agents,
+            run_id,
+            expected_tx_count,
         )
-        .into());
+        .await?;
+        let total_cost =
+            get_max_spam_cost(scenario.to_owned(), &rpc_client).await? * U256::from(duration);
+        if min_balance < U256::from(total_cost) {
+            return Err(ContenderError::SpamError(
+                "min_balance is not enough to cover the cost of the spam transactions",
+                format!(
+                    "min_balance: {}, total_cost: {}",
+                    format_ether(min_balance),
+                    format_ether(total_cost)
+                )
+                    .into(),
+            )
+                .into());
+        }
     }
+    Ok(0)
+
+
+
 
     // trigger blockwise spammer
-    if let Some(txs_per_block) = args.txs_per_block {
-        println!("Blockwise spamming with {} txs per block", txs_per_block);
-        let spammer = BlockwiseSpammer {};
-
-        match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
-            SpamCallbackType::Log(cback) => {
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_millis();
-                run_id =
-                    db.insert_run(timestamp as u64, txs_per_block * duration, &args.testfile)?;
-                spammer
-                    .spam_rpc(
-                        &mut scenario,
-                        txs_per_block,
-                        duration,
-                        Some(run_id),
-                        cback.into(),
-                    )
-                    .await?;
-            }
-            SpamCallbackType::Nil(cback) => {
-                spammer
-                    .spam_rpc(&mut scenario, txs_per_block, duration, None, cback.into())
-                    .await?;
-            }
-        };
-        return Ok(run_id);
-    }
+    // if let Some(txs_per_block) = args.txs_per_block {
+    //     println!("Blockwise spamming with {} txs per block", txs_per_block);
+    //     let spammer = BlockwiseSpammer {};
+    //
+    //     match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
+    //         SpamCallbackType::Log(cback) => {
+                // let timestamp = std::time::SystemTime::now()
+                //     .duration_since(std::time::UNIX_EPOCH)
+                //     .expect("Time went backwards")
+                //     .as_millis();
+                // spammer
+                //     .spam_rpc(
+                //         &mut scenario,
+                //         txs_per_block,
+                //         duration,
+                //         cback.into(),
+                //     )
+                //     .await?;
+    //         }
+    //         SpamCallbackType::Nil(cback) => {
+    //             spammer
+    //                 .spam_rpc(&mut scenario, txs_per_block, duration, cback.into())
+    //                 .await?;
+    //         }
+    //     };
+    //     return Ok(run_id);
+    // }
 
     // trigger timed spammer
-    let tps = args.txs_per_second.unwrap_or(10);
-    println!("Timed spamming with {} txs per second", tps);
-    let interval = std::time::Duration::from_secs(1);
-    let spammer = TimedSpammer::new(interval);
-    match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
-        SpamCallbackType::Log(cback) => {
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_millis();
-            run_id = db.insert_run(timestamp as u64, tps * duration, &args.testfile)?;
-            spammer
-                .spam_rpc(&mut scenario, tps, duration, Some(run_id), cback.into())
-                .await?;
-        }
-        SpamCallbackType::Nil(cback) => {
-            spammer
-                .spam_rpc(&mut scenario, tps, duration, None, cback.into())
-                .await?;
-        }
-    };
+    // let tps = args.txs_per_second.unwrap_or(10);
+    // println!("Timed spamming with {} txs per second", tps);
+    // let interval = std::time::Duration::from_secs(1);
+    // let spammer = TimedSpammer::new(interval);
+    // match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
+    //     SpamCallbackType::Log(cback) => {
+            // let timestamp = std::time::SystemTime::now()
+            //     .duration_since(std::time::UNIX_EPOCH)
+            //     .expect("Time went backwards")
+            //     .as_millis();
+            // run_id = db.insert_run(timestamp as u64, tps * duration, &args.testfile)?;
+            // spammer
+            //     .spam_rpc(&mut scenario, tps, duration, Some(run_id), cback.into())
+            //     .await?;
+    //     }
+    //     SpamCallbackType::Nil(cback) => {
+    //         spammer
+    //             .spam_rpc(&mut scenario, tps, duration, cback.into())
+    //             .await?;
+    //     }
+    // };
 
-    Ok(run_id)
+    // Ok(run_id)
 }
 
 /// Returns the maximum cost of a spam transaction.

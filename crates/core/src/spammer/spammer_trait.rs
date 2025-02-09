@@ -37,7 +37,6 @@ where
         scenario: &mut TestScenario<D, S, P>,
         txs_per_period: usize,
         num_periods: usize,
-        run_id: Option<u64>,
         sent_tx_callback: Arc<F>,
     ) -> impl std::future::Future<Output = Result<()>> {
         let quit = Arc::new(AtomicBool::default());
@@ -86,25 +85,6 @@ where
                     }
                 }
                 tick += 1;
-            }
-
-            if let Some(run_id) = run_id {
-                loop {
-                    let cache_size = scenario
-                        .msg_handle
-                        .flush_cache(run_id)
-                        .await
-                        .expect("failed to flush cache");
-                    if cache_size == 0 {
-                        break;
-                    }
-
-                    if quit.load(std::sync::atomic::Ordering::Relaxed) {
-                        println!("CTRL-C received, stopping result collection...");
-                        break;
-                    }
-                }
-                println!("done. run_id={}", run_id);
             }
 
             Ok(())
