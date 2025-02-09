@@ -68,11 +68,11 @@ where
         run_id: u64,
         expected_tx_count: usize,
     ) -> Result<Self> {
-        // let rpc_client = Arc::new(
-        //     ProviderBuilder::new()
-        //         .network::<AnyNetwork>()
-        //         .on_http(rpc_url.to_owned()),
-        // );
+        let rpc_client = Arc::new(
+            ProviderBuilder::new()
+                .network::<AnyNetwork>()
+                .on_http(rpc_url.to_owned()),
+        );
         let rpc_clients: Arc<Vec<Arc<AnyProvider>>> = Arc::new((0..20).map(|_| {
             Arc::new(
                 ProviderBuilder::new()
