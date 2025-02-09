@@ -217,7 +217,7 @@ pub async fn fund_accounts(
 
     for tx in pending_fund_txs {
         let pending = rpc_client.watch_pending_transaction(tx).await?;
-        println!("funding tx confirmed ({})", pending.await?);
+        // println!("funding tx confirmed ({})", pending.await?);
     }
 
     Ok(())
@@ -230,11 +230,11 @@ pub async fn fund_account(
     rpc_client: &EthProvider,
     nonce: Option<u64>,
 ) -> Result<PendingTransactionConfig, Box<dyn std::error::Error>> {
-    println!(
-        "funding account {} with user account {}",
-        recipient,
-        sender.address()
-    );
+    // println!(
+    //     "funding account {} with user account {}",
+    //     recipient,
+    //     sender.address()
+    // );
 
     let gas_price = rpc_client.get_gas_price().await?;
     let nonce = nonce.unwrap_or(rpc_client.get_transaction_count(sender.address()).await?);

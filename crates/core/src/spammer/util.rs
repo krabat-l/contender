@@ -49,11 +49,11 @@ pub mod test {
         rpc_client: &EthProvider,
         nonce: Option<u64>,
     ) -> Result<PendingTransactionConfig, Box<dyn std::error::Error>> {
-        println!(
-            "funding account {} with user account {}",
-            recipient,
-            sender.address()
-        );
+        // println!(
+        //     "funding account {} with user account {}",
+        //     recipient,
+        //     sender.address()
+        // );
 
         let gas_price = rpc_client.get_gas_price().await?;
         let nonce = nonce.unwrap_or(rpc_client.get_transaction_count(sender.address()).await?);
