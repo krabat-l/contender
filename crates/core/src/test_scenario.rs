@@ -35,6 +35,7 @@ where
     pub db: Arc<D>,
     pub rpc_url: Url,
     pub rpc_client: Arc<AnyProvider>,
+    pub rpc_clients: Arc<Vec<Arc<AnyProvider>>>,
     pub eth_client: Arc<EthProvider>,
     pub bundle_client: Option<Arc<BundleClient>>,
     pub builder_rpc_url: Option<Url>,
@@ -67,11 +68,18 @@ where
         run_id: u64,
         expected_tx_count: usize,
     ) -> Result<Self> {
-        let rpc_client = Arc::new(
-            ProviderBuilder::new()
-                .network::<AnyNetwork>()
-                .on_http(rpc_url.to_owned()),
-        );
+        // let rpc_client = Arc::new(
+        //     ProviderBuilder::new()
+        //         .network::<AnyNetwork>()
+        //         .on_http(rpc_url.to_owned()),
+        // );
+        let rpc_clients: Arc<Vec<Arc<AnyProvider>>> = Arc::new((0..20).map(|_| {
+            Arc::new(
+                ProviderBuilder::new()
+                    .network::<AnyNetwork>()
+                    .on_http(rpc_url.to_owned()),
+            )
+        }).collect());
         let mut wallet_map = HashMap::new();
         let wallets = signers.iter().map(|s| {
             let w = EthereumWallet::new(s.clone());
@@ -87,7 +95,7 @@ where
             }
         }
 
-        let chain_id = rpc_client
+        let chain_id = rpc_clients[0]
             .get_chain_id()
             .await
             .map_err(|e| ContenderError::with_err(e, "failed to get chain id"))?;
@@ -95,7 +103,7 @@ where
         let mut nonces = HashMap::new();
         let all_addrs = wallet_map.keys().copied().collect::<Vec<Address>>();
         for addr in &all_addrs {
-            let nonce = rpc_client
+            let nonce = rpc_clients[0]
                 .get_transaction_count(*addr)
                 .await
                 .map_err(|e| ContenderError::with_err(e, "failed to retrieve nonce from RPC"))?;
@@ -115,6 +123,7 @@ where
             db: db.clone(),
             rpc_url: rpc_url.to_owned(),
             rpc_client,
+            rpc_clients,
             eth_client: Arc::new(ProviderBuilder::new().on_http(rpc_url)),
             bundle_client,
             builder_rpc_url,
@@ -283,15 +292,12 @@ where
                     panic!("failed to estimate gas for setup step '{}'", tx_label)
                 });
 
-                // 计算所需总费用 (使用 U256)
                 let value = tx.value.unwrap_or_default();
 
-                // 检查余额
                 let balance = wallet.get_balance(from).await.unwrap_or_else(|e| {
                     panic!("Failed to get balance for address {:?}: {:?}", from, e)
                 });
 
-                // 打印余额信息
                 println!("Account balance check for tx '{}':", tx_label);
                 println!("  Address: {:?}", from);
                 println!("  Current balance: {} wei", balance);
@@ -482,7 +488,7 @@ where
         let mut tasks: Vec<tokio::task::JoinHandle<()>> = vec![];
 
         for payload in payloads {
-            let rpc_client = self.rpc_client.clone();
+            let rpc_client = Arc::clone(&self.rpc_clients[rand::random::<usize>() % self.rpc_clients.len()]);
             let bundle_client = self.bundle_client.clone();
             let callback_handler = callback_handler.clone();
             let tx_handler = self.msg_handle.clone();

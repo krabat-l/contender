@@ -65,14 +65,24 @@ impl PendingRunTx {
     }
 }
 
+#[derive(Debug)]
+struct ConfirmedTxInfo {
+    block_number: u64,
+    gas_used: u64,
+    timestamp: usize,
+}
+
+
 struct TxActor<D> where D: DbOps {
     receiver: mpsc::Receiver<TxActorMessage>,
     db: Arc<D>,
-    cache: Arc<DashMap<TxHash, PendingRunTx>>,
+    pending_txs: Arc<DashMap<TxHash, PendingRunTx>>,
+    confirmed_txs: Arc<DashMap<TxHash, ConfirmedTxInfo>>,
     read: SplitStream<WebSocketStream<ConnectStream>>,
     run_id: Option<u64>,
     expected_tx_count: usize,
     confirmed_count: usize,
+    all_run_txs: Vec<RunTx>,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -93,11 +103,34 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         Self {
             receiver,
             db,
-            cache: Arc::new(DashMap::new()),
+            pending_txs: Arc::new(DashMap::new()),
+            confirmed_txs: Arc::new(DashMap::new()),
             read,
             run_id: Some(run_id),
             expected_tx_count,
             confirmed_count: 0,
+            all_run_txs: Vec::new(),
+        }
+    }
+
+    fn try_match_and_process_tx(
+        &mut self,
+        tx_hash: TxHash,
+        pending_tx: Option<PendingRunTx>,
+        confirmed_info: Option<ConfirmedTxInfo>,
+    ) -> Option<RunTx> {
+        match (pending_tx, confirmed_info) {
+            (Some(pending), Some(confirmed)) => {
+                Some(RunTx {
+                    tx_hash,
+                    start_timestamp: pending.start_timestamp,
+                    end_timestamp: confirmed.timestamp,
+                    block_number: confirmed.block_number,
+                    gas_used: u128::from(confirmed.gas_used),
+                    kind: pending.kind,
+                })
+            }
+            _ => None
         }
     }
 
@@ -146,63 +179,65 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     }
 
     async fn process_ws_message(&mut self, text: String) -> Result<bool, Box<dyn Error>> {
-        let mut all_run_txs = Vec::new();
         match serde_json::from_str::<Value>(&text) {
             Ok(json) => {
                 if let Some(result) = json["params"]["result"].as_object() {
                     let block_number = result["block_number"].as_u64().unwrap_or_default();
                     let fragment_index = result["index"].as_u64().unwrap_or_default();
                     let gas_used = result["gas_used"].as_u64().unwrap_or_default();
-                    if let Some(transactions) = result["transactions"].as_array() {
-                        let confirmed_tx_hashes: Vec<TxHash> = transactions
-                            .iter()
-                            .filter_map(|tx| tx["hash"].as_str())
-                            .filter_map(|hash_str| {
-                                let hash_str = hash_str.strip_prefix("0x").unwrap_or(hash_str);
-                                hex::decode(hash_str)
-                                    .ok()
-                                    .map(|bytes| TxHash::from_slice(&bytes))
-                            })
-                            .collect();
 
-                        let mut confirmed_txs = Vec::new();
-                        for hash in &confirmed_tx_hashes {
-                            if let Some((_, pending_tx)) = self.cache.remove(hash) {
-                                confirmed_txs.push(pending_tx);
+                    if let Some(transactions) = result["transactions"].as_array() {
+                        let timestamp_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_millis() as usize;
+
+                        let mut new_confirmed_txs = Vec::new();
+
+                        for tx in transactions {
+                            if let Some(hash_str) = tx["hash"].as_str() {
+                                let hash_str = hash_str.strip_prefix("0x").unwrap_or(hash_str);
+                                if let Ok(bytes) = hex::decode(hash_str) {
+                                    let tx_hash = TxHash::from_slice(&bytes);
+
+                                    // Try to match with pending tx
+                                    if let Some((_, pending_tx)) = self.pending_txs.remove(&tx_hash) {
+                                        if let Some(run_tx) = self.try_match_and_process_tx(
+                                            tx_hash,
+                                            Some(pending_tx),
+                                            Some(ConfirmedTxInfo {
+                                                block_number,
+                                                gas_used,
+                                                timestamp: timestamp_ms,
+                                            })
+                                        ) {
+                                            new_confirmed_txs.push(run_tx);
+                                        }
+                                    } else {
+                                        // Store confirmation info for future matching
+                                        self.confirmed_txs.insert(tx_hash, ConfirmedTxInfo {
+                                            block_number,
+                                            gas_used,
+                                            timestamp: timestamp_ms,
+                                        });
+                                    }
+                                }
                             }
                         }
 
-                        if !confirmed_txs.is_empty() {
-                            println!("confirmed {} {} txs at block {}, fragments {}, unconfirmed txs count: {}",
-                                     confirmed_txs.len(), confirmed_tx_hashes.len(), block_number, fragment_index, self.expected_tx_count - self.confirmed_count - confirmed_txs.len());
-                        }
+                        if !new_confirmed_txs.is_empty() {
+                            println!("confirmed {} txs at block {}, fragment {}, unconfirmed txs count: {}",
+                                     new_confirmed_txs.len(), block_number, fragment_index,
+                                     self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len());
 
-                        if let Some(run_id) = self.run_id {
-                            let timestamp_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .expect("Time went backwards")
-                                .as_millis();
-
-                            let run_txs = confirmed_txs
-                                .into_iter()
-                                .map(|pending_tx| RunTx {
-                                    tx_hash: pending_tx.tx_hash,
-                                    start_timestamp: pending_tx.start_timestamp,
-                                    end_timestamp: timestamp_ms as usize,
-                                    block_number,
-                                    gas_used: u128::from(gas_used),
-                                    kind: pending_tx.kind,
-                                })
-                                .collect::<Vec<_>>();
-
-                            if !run_txs.is_empty() {
-                                all_run_txs.extend(run_txs.clone());
-                                self.db.insert_run_txs(run_id, run_txs.clone())?;
-                                self.confirmed_count += run_txs.len();
+                            if let Some(run_id) = self.run_id {
+                                self.all_run_txs.extend(new_confirmed_txs.clone());
+                                self.db.insert_run_txs(run_id, new_confirmed_txs.clone())?;
+                                self.confirmed_count += new_confirmed_txs.len();
 
                                 if self.confirmed_count >= self.expected_tx_count {
                                     println!("Reached expected transaction count: {}", self.expected_tx_count);
-                                    Self::print_stats(&all_run_txs);
+                                    Self::print_stats(&self.all_run_txs);
                                     return Ok(true);
                                 }
                             }
@@ -226,16 +261,34 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 kind,
                 on_receipt,
             } => {
-                let start_timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_millis() as usize;
-                let run_tx = PendingRunTx {
-                    tx_hash,
-                    start_timestamp,
-                    kind,
-                };
-                self.cache.insert(tx_hash, run_tx);
+                // Check if we already have confirmation for this tx
+                if let Some((_, confirmed_info)) = self.confirmed_txs.remove(&tx_hash) {
+                    let pending_tx = PendingRunTx {
+                        tx_hash,
+                        start_timestamp,
+                        kind,
+                    };
+
+                    if let Some(run_tx) = self.try_match_and_process_tx(
+                        tx_hash,
+                        Some(pending_tx),
+                        Some(confirmed_info)
+                    ) {
+                        if let Some(run_id) = self.run_id {
+                            self.all_run_txs.push(run_tx.clone());
+                            self.db.insert_run_txs(run_id, vec![run_tx])?;
+                            self.confirmed_count += 1;
+                        }
+                    }
+                } else {
+                    // Store pending tx for future matching
+                    self.pending_txs.insert(tx_hash, PendingRunTx {
+                        tx_hash,
+                        start_timestamp,
+                        kind,
+                    });
+                }
+
                 on_receipt.send(()).map_err(|_| {
                     ContenderError::SpamError("failed to join TxActor callback", None)
                 })?;

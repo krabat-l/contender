@@ -67,6 +67,7 @@ where
             let mut cursor = self.on_spam(scenario).await?.take(num_periods);
 
             while let Some(trigger) = cursor.next().await {
+                println!("[{}] start send txs, current datetime: {}", tick, chrono::Local::now().to_string());
                 if quit.load(std::sync::atomic::Ordering::Relaxed) {
                     println!("CTRL-C received, stopping spam and collecting results...");
                     quit.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -75,6 +76,7 @@ where
 
                 let trigger = trigger.to_owned();
                 let payloads = scenario.prepare_spam(tx_req_chunks[tick]).await?;
+                println!("[{}] mid send txs, current datetime: {}", tick, chrono::Local::now().to_string());
                 let spam_tasks = scenario
                     .execute_spam(trigger, &payloads, sent_tx_callback.clone())
                     .await?;
@@ -84,6 +86,7 @@ where
                         eprintln!("spam task failed: {:?}", e);
                     }
                 }
+                println!("[{}] end send txs, current datetime: {}", tick, chrono::Local::now().to_string());
                 tick += 1;
             }
 
