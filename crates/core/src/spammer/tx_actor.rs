@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use chrono::Local;
+use dashmap::DashMap;
 use web3::{
     futures::StreamExt,
 };
@@ -68,7 +68,7 @@ impl PendingRunTx {
 struct TxActor<D> where D: DbOps {
     receiver: mpsc::Receiver<TxActorMessage>,
     db: Arc<D>,
-    cache: Vec<PendingRunTx>,
+    cache: Arc<DashMap<TxHash, PendingRunTx>>,
     read: SplitStream<WebSocketStream<ConnectStream>>,
     run_id: Option<u64>,
     expected_tx_count: usize,
@@ -93,10 +93,10 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         Self {
             receiver,
             db,
-            cache: Vec::new(),
+            cache: Arc::new(DashMap::new()),
             read,
             run_id: Some(run_id),
-            expected_tx_count: expected_tx_count,
+            expected_tx_count,
             confirmed_count: 0,
         }
     }
@@ -153,7 +153,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let block_number = result["block_number"].as_u64().unwrap_or_default();
                     let fragment_index = result["index"].as_u64().unwrap_or_default();
                     let gas_used = result["gas_used"].as_u64().unwrap_or_default();
-
                     if let Some(transactions) = result["transactions"].as_array() {
                         let confirmed_tx_hashes: Vec<TxHash> = transactions
                             .iter()
@@ -166,15 +165,16 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             })
                             .collect();
 
-                        let confirmed_txs: Vec<PendingRunTx> = self.cache
-                            .iter()
-                            .filter(|tx| confirmed_tx_hashes.contains(&tx.tx_hash))
-                            .cloned()
-                            .collect();
+                        let mut confirmed_txs = Vec::new();
+                        for hash in &confirmed_tx_hashes {
+                            if let Some((_, pending_tx)) = self.cache.remove(hash) {
+                                confirmed_txs.push(pending_tx);
+                            }
+                        }
 
                         if !confirmed_txs.is_empty() {
-                            println!("confirmed {} txs at block {}, fragments {}, unconfirmed txs count: {}",
-                                     confirmed_txs.len(), block_number, fragment_index, self.expected_tx_count - self.confirmed_count - confirmed_txs.len());
+                            println!("confirmed {} {} txs at block {}, fragments {}, unconfirmed txs count: {}",
+                                     confirmed_txs.len(), confirmed_tx_hashes.len(), block_number, fragment_index, self.expected_tx_count - self.confirmed_count - confirmed_txs.len());
                         }
 
                         if let Some(run_id) = self.run_id {
@@ -182,9 +182,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .expect("Time went backwards")
                                 .as_millis();
-
-                            // Remove confirmed transactions from cache
-                            self.cache.retain(|tx| !confirmed_tx_hashes.contains(&tx.tx_hash));
 
                             let run_txs = confirmed_txs
                                 .into_iter()
@@ -205,6 +202,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
 
                                 if self.confirmed_count >= self.expected_tx_count {
                                     println!("Reached expected transaction count: {}", self.expected_tx_count);
+                                    Self::print_stats(&all_run_txs);
                                     return Ok(true);
                                 }
                             }
@@ -237,11 +235,10 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     start_timestamp,
                     kind,
                 };
-                self.cache.push(run_tx);
+                self.cache.insert(tx_hash, run_tx);
                 on_receipt.send(()).map_err(|_| {
                     ContenderError::SpamError("failed to join TxActor callback", None)
                 })?;
-                let now = Local::now();
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {

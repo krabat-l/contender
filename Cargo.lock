@@ -1281,6 +1281,7 @@ dependencies = [
  "async-tungstenite",
  "chrono",
  "contender_bundle_provider",
+ "dashmap",
  "futures",
  "hex",
  "rand",
