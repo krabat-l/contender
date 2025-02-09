@@ -59,7 +59,7 @@ where
         config: P,
         db: Arc<D>,
         rpc_url: Url,
-        ws_url: String,
+        ws_url: Url,
         builder_rpc_url: Option<Url>,
         rand_seed: S,
         signers: &[PrivateKeySigner],

@@ -48,7 +48,7 @@ pub async fn spam(
     let testconfig = TestConfig::from_file(&args.testfile)?;
     let rand_seed = RandSeed::seed_from_str(&args.seed);
     let rpc_url = Url::parse(&args.rpc_url).expect("Invalid RPC URL");
-    let ws_url = args.ws_url;
+    let ws_url = Url::parse(&args.ws_url).expect("Invalid WS URL");
     let rpc_client = ProviderBuilder::new()
         .network::<AnyNetwork>()
         .on_http(rpc_url.to_owned());

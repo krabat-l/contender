@@ -28,11 +28,12 @@ pub async fn setup(
     min_balance: String,
     seed: RandSeed,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = Url::parse(rpc_url.as_ref()).expect("Invalid RPC URL");
+    let rpc_url = Url::parse(rpc_url.as_ref()).expect("Invalid RPC URL");
+    let ws_url = Url::parse(ws_url.as_ref()).expect("Invalid WS URL");
     let rpc_client = ProviderBuilder::new()
         .network::<AnyNetwork>()
-        .on_http(url.to_owned());
-    let eth_client = ProviderBuilder::new().on_http(url.to_owned());
+        .on_http(rpc_url.to_owned());
+    let eth_client = ProviderBuilder::new().on_http(rpc_url.to_owned());
     let testconfig: TestConfig = TestConfig::from_file(testfile.as_ref())?;
     let min_balance = parse_ether(&min_balance)?;
 
@@ -113,8 +114,8 @@ pub async fn setup(
     let mut scenario = TestScenario::new(
         testconfig.to_owned(),
         db.clone().into(),
-        url,
-        ws_url.as_ref().to_string(),
+        rpc_url,
+        ws_url,
         None,
         seed,
         &user_signers_with_defaults,

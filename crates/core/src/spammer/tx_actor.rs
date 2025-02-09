@@ -2,20 +2,21 @@ use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use web3::{
-    Web3,
-    transports::WebSocket,
-    types::{FilterBuilder, Log, H256},
     futures::StreamExt,
 };
 use serde::{Deserialize, Serialize};
 use alloy::primitives::TxHash;
-
+use url::Url;
 use crate::{
     db::{DbOps, RunTx},
     error::ContenderError,
 };
-use web3::api::SubscriptionStream;
 use web3::types::{BlockHeader, BlockId};
+use async_tungstenite::tokio::{connect_async, ConnectStream};
+use async_tungstenite::WebSocketStream;
+use futures::SinkExt;
+use futures::stream::SplitStream;
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 struct FragmentResponse {
@@ -69,41 +70,32 @@ struct TxActor<D> where D: DbOps {
     receiver: mpsc::Receiver<TxActorMessage>,
     db: Arc<D>,
     cache: Vec<PendingRunTx>,
-    web3: Web3<WebSocket>,
+    read: SplitStream<WebSocketStream<ConnectStream>>,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     pub async fn new(
         receiver: mpsc::Receiver<TxActorMessage>,
         db: Arc<D>,
-        ws_url: String,
-    ) -> Result<Self, web3::Error> {
-        let transport = WebSocket::new(&ws_url).await?;
-        let web3 = Web3::new(transport);
+        ws_url: Url,
+    ) -> Self {
+        let (ws_stream, _) = connect_async(ws_url).await.expect("failed to connect to WS server");
+        let (mut write, mut read) = ws_stream.split();
+        let subscribe_message = r#"{"jsonrpc":"2.0","method":"eth_subscribe","params":["fragments"],"id":1}"#;
+        write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into())).await.expect("failed to send subscribe message");
 
-        Ok(Self {
+        Self {
             receiver,
             db,
             cache: Vec::new(),
-            web3,
-        })
-    }
-
-    async fn subscribe_to_new_blocks(&self) -> Result<SubscriptionStream<WebSocket, BlockHeader>, Box<dyn Error>> {
-        let filter = FilterBuilder::default()
-            .build();
-
-        let subscription = self.web3.eth_subscribe()
-            .subscribe_new_heads()
-            .await?;
-
-        Ok(subscription)
+            read,
+        }
     }
 
     async fn handle_message(
         &mut self,
         message: TxActorMessage,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn Error>> {
         match message {
             TxActorMessage::SentRunTx {
                 tx_hash,
@@ -131,65 +123,67 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     return Ok(());
                 }
 
-                let mut subscription = self.web3.eth_subscribe()
-                    .subscribe_new_heads()
-                    .await?;
-
                 while !self.cache.is_empty() {
-                    if let Some(block) = subscription.next().await {
-                        let block = block?;
+                    while let Some(message) = self.read.next().await {
+                        match message? {
+                            async_tungstenite::tungstenite::Message::Text(text) => {
+                                // Deserialize the JSON message
+                                match serde_json::from_str::<Value>(&text) {
+                                    Ok(json) => {
+                                        if let Some(result) = json["params"]["result"].as_object() {
+                                            let block_number = result["block_number"].as_u64().unwrap_or_default();
+                                            let timestamp = result["timestamp"].as_u64().unwrap_or_default();
+                                            let gas_used = result["gas_used"].as_u64().unwrap_or_default();
+                                            // Extract and print the number of transactions
+                                            if let Some(transactions) = result["transactions"].as_array() {
+                                                println!("Number of transactions: {}", transactions.len());
+                                                let confirmed_tx_hashes: Vec<TxHash> = transactions
+                                                    .iter()
+                                                    .filter_map(|tx| tx["hash"].as_str())
+                                                    .map(|hash_str| TxHash::from_slice(&hex::decode(hash_str).unwrap()))
+                                                    .collect();
+                                                let confirmed_txs: Vec<PendingRunTx> = self.cache
+                                                    .iter()
+                                                    .filter(|tx| confirmed_tx_hashes.contains(&tx.tx_hash))
+                                                    .cloned()
+                                                    .collect();
+                                                self.cache.retain(|tx| !confirmed_tx_hashes.contains(&tx.tx_hash));
+                                                let run_txs = confirmed_txs.clone().into_iter()
+                                                    .map(|pending_tx| {
+                                                        RunTx {
+                                                            tx_hash: pending_tx.tx_hash,
+                                                            start_timestamp: pending_tx.start_timestamp / 1000,
+                                                            end_timestamp: timestamp as usize,
+                                                            block_number,
+                                                            gas_used: u128::from(gas_used),
+                                                            kind: pending_tx.kind,
+                                                        }
+                                                    })
+                                                    .collect::<Vec<_>>();
+                                                if !run_txs.is_empty() {
+                                                    self.db.insert_run_txs(run_id, run_txs)?;
 
-                        // Get full block details
-                        let block_with_txs = self.web3.eth()
-                            .block_with_txs(BlockId::from(block.hash.unwrap()))
-                            .await?
-                            .unwrap();
-
-                        let confirmed_tx_hashes: Vec<TxHash> = block_with_txs.transactions
-                            .iter()
-                            .map(|tx| TxHash::from_slice(&tx.hash.0))
-                            .collect();
-
-                        let confirmed_txs: Vec<PendingRunTx> = self.cache
-                            .iter()
-                            .filter(|tx| confirmed_tx_hashes.contains(&tx.tx_hash))
-                            .cloned()
-                            .collect();
-
-                        self.cache.retain(|tx| !confirmed_tx_hashes.contains(&tx.tx_hash));
-
-                        let run_txs = confirmed_txs.clone().into_iter()
-                            .map(|pending_tx| {
-                                RunTx {
-                                    tx_hash: pending_tx.tx_hash,
-                                    start_timestamp: pending_tx.start_timestamp / 1000,
-                                    end_timestamp: block_with_txs.timestamp.as_u64() as usize,
-                                    block_number: block_with_txs.number.unwrap().as_u64(),
-                                    gas_used: block_with_txs.gas_used.as_u128(),
-                                    kind: pending_tx.kind,
+                                                    for tx in &confirmed_txs {
+                                                        println!(
+                                                            "tx landed. hash={}\tblock_num={}",
+                                                            tx.tx_hash,
+                                                            block_number,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => eprintln!("Failed to parse JSON: {:?}", e),
                                 }
-                            })
-                            .collect::<Vec<_>>();
-
-                        if !run_txs.is_empty() {
-                            self.db.insert_run_txs(run_id, run_txs)?;
-
-                            for tx in &confirmed_txs {
-                                println!(
-                                    "tx landed. hash={}\tblock_num={}",
-                                    tx.tx_hash,
-                                    block_with_txs.number.unwrap()
-                                );
                             }
+                            _ => {}
+                        }
+                        if self.cache.is_empty() {
+                            break;
                         }
                     }
-
-                    if self.cache.is_empty() {
-                        break;
-                    }
                 }
-
-                subscription.unsubscribe().await?;
 
                 on_flush.send(self.cache.len()).map_err(|_| {
                     ContenderError::SpamError("failed to join TxActor on_flush", None)
@@ -216,10 +210,10 @@ impl TxActorHandle {
     pub async fn new<D: DbOps + Send + Sync + 'static>(
         bufsize: usize,
         db: Arc<D>,
-        ws_url: String,
+        ws_url: Url,
     ) -> Result<Self, Box<dyn Error>> {
         let (sender, receiver) = mpsc::channel(bufsize);
-        let mut actor = TxActor::new(receiver, db, ws_url).await?;
+        let mut actor = TxActor::new(receiver, db, ws_url).await;
         tokio::task::spawn(async move {
             actor.run().await.expect("tx actor crashed");
         });

@@ -64,6 +64,7 @@ pub async fn run(
     check_private_keys(&testconfig, &user_signers);
 
     let rpc_url = Url::parse(&rpc_url).expect("Invalid RPC URL");
+    let ws_url = Url::parse(&ws_url).expect("Invalid WS URL");
     let mut scenario = TestScenario::new(
         testconfig,
         db.clone().into(),
