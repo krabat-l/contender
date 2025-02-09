@@ -163,12 +163,12 @@ pub async fn spam(
                 format_ether(min_balance),
                 format_ether(total_cost)
             )
-                .into(),
+            .into(),
         )
-            .into());
+        .into());
     }
     // }
-    Ok(run_id)
+    // Ok(run_id)
 
 
 
@@ -203,29 +203,29 @@ pub async fn spam(
     // }
 
     // trigger timed spammer
-    // let tps = args.txs_per_second.unwrap_or(10);
-    // println!("Timed spamming with {} txs per second", tps);
-    // let interval = std::time::Duration::from_secs(1);
-    // let spammer = TimedSpammer::new(interval);
-    // match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
-    //     SpamCallbackType::Log(cback) => {
-            // let timestamp = std::time::SystemTime::now()
-            //     .duration_since(std::time::UNIX_EPOCH)
-            //     .expect("Time went backwards")
-            //     .as_millis();
+    let tps = args.txs_per_second.unwrap_or(10);
+    println!("Timed spamming with {} txs per second", tps);
+    let interval = std::time::Duration::from_secs(1);
+    let spammer = TimedSpammer::new(interval);
+    match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
+        SpamCallbackType::Log(cback) => {
+        //     let timestamp = std::time::SystemTime::now()
+        //         .duration_since(std::time::UNIX_EPOCH)
+        //         .expect("Time went backwards")
+        //         .as_millis();
             // run_id = db.insert_run(timestamp as u64, tps * duration, &args.testfile)?;
-            // spammer
-            //     .spam_rpc(&mut scenario, tps, duration, Some(run_id), cback.into())
-            //     .await?;
-    //     }
-    //     SpamCallbackType::Nil(cback) => {
-    //         spammer
-    //             .spam_rpc(&mut scenario, tps, duration, cback.into())
-    //             .await?;
-    //     }
-    // };
+            spammer
+                .spam_rpc(&mut scenario, tps, duration, cback.into())
+                .await?;
+        }
+        SpamCallbackType::Nil(cback) => {
+            spammer
+                .spam_rpc(&mut scenario, tps, duration, cback.into())
+                .await?;
+        }
+    };
 
-    // Ok(run_id)
+    Ok(run_id)
 }
 
 /// Returns the maximum cost of a spam transaction.

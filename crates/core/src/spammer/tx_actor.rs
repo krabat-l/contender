@@ -43,6 +43,9 @@ enum TxActorMessage {
         kind: Option<String>,
         on_receipt: oneshot::Sender<()>,
     },
+    CheckConfirmedCount {
+        response: oneshot::Sender<usize>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,7 +71,7 @@ struct TxActor<D> where D: DbOps {
     cache: Vec<PendingRunTx>,
     read: SplitStream<WebSocketStream<ConnectStream>>,
     run_id: Option<u64>,
-    expected_tx_count: Option<usize>,
+    expected_tx_count: usize,
     confirmed_count: usize,
 }
 
@@ -93,7 +96,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             cache: Vec::new(),
             read,
             run_id: Some(run_id),
-            expected_tx_count: Some(expected_tx_count),
+            expected_tx_count: expected_tx_count,
             confirmed_count: 0,
         }
     }
@@ -173,7 +176,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                      confirmed_txs.len(), block_number, fragment_index);
                         }
 
-                        if let (Some(run_id), Some(expected_count)) = (self.run_id, self.expected_tx_count) {
+                        if let Some(run_id) = self.run_id {
                             let timestamp_ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .expect("Time went backwards")
@@ -198,8 +201,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 self.db.insert_run_txs(run_id, run_txs.clone())?;
                                 self.confirmed_count += run_txs.len();
 
-                                if self.confirmed_count >= expected_count {
-                                    println!("Reached expected transaction count: {}", expected_count);
+                                if self.confirmed_count >= self.expected_tx_count {
+                                    println!("Reached expected transaction count: {}", self.expected_tx_count);
                                     return Ok(true);
                                 }
                             }
@@ -238,6 +241,11 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 })?;
                 let now = Local::now();
                 println!("Current date and time: {}", now.format("%Y-%m-%d %H:%M:%S%.3f"));
+            }
+            TxActorMessage::CheckConfirmedCount { response } => {
+                response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
+                    ContenderError::SpamError("failed to send confirmed count", None)
+                })?;
             }
         }
         Ok(())
@@ -301,5 +309,25 @@ impl TxActorHandle {
             .await?;
         receiver.await?;
         Ok(())
+    }
+
+    pub async fn wait_for_confirmations(&self) -> Result<(), Box<dyn std::error::Error>> {
+        loop {
+            let (sender, receiver) = oneshot::channel();
+            self.sender
+                .send(TxActorMessage::CheckConfirmedCount {
+                    response: sender,
+                })
+                .await?;
+
+            let unconfirmed_count = receiver.await?;
+
+            if unconfirmed_count == 0 {
+                return Ok(());
+            }
+
+            // Sleep for a short duration before checking again
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
     }
 }
