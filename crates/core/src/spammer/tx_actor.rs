@@ -184,7 +184,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                     Ok(json) => {
                                         if let Some(result) = json["params"]["result"].as_object() {
                                             let block_number = result["block_number"].as_u64().unwrap_or_default();
-                                            let fragment_index = result["index"].as_u64().unwrap_or();
+                                            let fragment_index = result["index"].as_u64().unwrap_or_default();
                                             let gas_used = result["gas_used"].as_u64().unwrap_or_default();
                                             // Extract and print the number of transactions
                                             if let Some(transactions) = result["transactions"].as_array() {
