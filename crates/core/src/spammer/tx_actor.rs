@@ -173,8 +173,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             .collect();
 
                         if !confirmed_txs.is_empty() {
-                            println!("confirmed {} txs at block {}, fragments {}",
-                                     confirmed_txs.len(), block_number, fragment_index);
+                            println!("confirmed {} txs at block {}, fragments {}, unconfirmed txs count: {}",
+                                     confirmed_txs.len(), block_number, fragment_index, self.expected_tx_count - self.confirmed_count - confirmed_txs.len());
                         }
 
                         if let Some(run_id) = self.run_id {
@@ -247,7 +247,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     ContenderError::SpamError("failed to join TxActor callback", None)
                 })?;
                 let now = Local::now();
-                println!("Current date and time: {}", now.format("%Y-%m-%d %H:%M:%S%.3f"));
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {

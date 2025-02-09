@@ -87,7 +87,7 @@ where
                 tick += 1;
             }
 
-            scenario.msg_handle.wait_for_confirmations().await.expect("failed to wait for confirmations");
+            let _ = scenario.msg_handle.wait_for_confirmations().await;
 
             Ok(())
         }
