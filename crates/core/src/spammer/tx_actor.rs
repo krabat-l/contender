@@ -146,6 +146,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     }
 
     async fn process_ws_message(&mut self, text: String) -> Result<bool, Box<dyn Error>> {
+        let mut all_run_txs = Vec::new();
         match serde_json::from_str::<Value>(&text) {
             Ok(json) => {
                 if let Some(result) = json["params"]["result"].as_object() {
@@ -198,13 +199,19 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 .collect::<Vec<_>>();
 
                             if !run_txs.is_empty() {
+                                all_run_txs.extend(run_txs.clone());
                                 self.db.insert_run_txs(run_id, run_txs.clone())?;
-                                self.confirmed_count += run_txs.len();
+                                let confirmed_count = self.confirmed_count + run_txs.len();
 
-                                if self.confirmed_count >= self.expected_tx_count {
+                                if confirmed_count >= self.expected_tx_count {
                                     println!("Reached expected transaction count: {}", self.expected_tx_count);
+                                    if !all_run_txs.is_empty() {
+                                        Self::print_stats(&all_run_txs);
+                                    }
+                                    self.confirmed_count = confirmed_count;
                                     return Ok(true);
                                 }
+                                self.confirmed_count = confirmed_count;
                             }
                         }
                     }
