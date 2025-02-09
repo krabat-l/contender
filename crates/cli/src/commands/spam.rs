@@ -116,12 +116,12 @@ pub async fn spam(
 
     check_private_keys(&testconfig, &user_signers);
 
-    if args.txs_per_block.is_some() && args.txs_per_second.is_some() {
-        panic!("Cannot set both --txs-per-block and --txs-per-second");
+    if !args.txs_per_second.is_some() {
+        panic!("Must set --txs-per-second (--tps)");
     }
-    if args.txs_per_block.is_none() && args.txs_per_second.is_none() {
-        panic!("Must set either --txs-per-block (--tpb) or --txs-per-second (--tps)");
-    }
+    // if args.txs_per_block.is_none() && args.txs_per_second.is_none() {
+    //     panic!("Must set either --txs-per-block (--tpb) or --txs-per-second (--tps)");
+    // }
 
     fund_accounts(
         &all_signer_addrs,
@@ -132,45 +132,43 @@ pub async fn spam(
     )
     .await?;
 
-    let mut run_id = 0;
-    if let Some(txs_per_block) = args.txs_per_block {
-        let expected_tx_count = txs_per_block * duration;
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_millis();
-        run_id =
-            db.insert_run(timestamp as u64, txs_per_block * duration, &args.testfile)?;
-        let mut scenario = TestScenario::new(
-            testconfig,
-            db.clone().into(),
-            rpc_url,
-            ws_url,
-            args.builder_url
-                .map(|url| Url::parse(&url).expect("Invalid builder URL")),
-            rand_seed,
-            &user_signers,
-            agents,
-            run_id,
-            expected_tx_count,
-        )
-        .await?;
-        let total_cost =
-            get_max_spam_cost(scenario.to_owned(), &rpc_client).await? * U256::from(duration);
-        if min_balance < U256::from(total_cost) {
-            return Err(ContenderError::SpamError(
-                "min_balance is not enough to cover the cost of the spam transactions",
-                format!(
-                    "min_balance: {}, total_cost: {}",
-                    format_ether(min_balance),
-                    format_ether(total_cost)
-                )
-                    .into(),
+    let expected_tx_count = args.txs_per_second.unwrap_or(0) * duration;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis();
+    let run_id =
+        db.insert_run(timestamp as u64, expected_tx_count, &args.testfile)?;
+    let mut scenario = TestScenario::new(
+        testconfig,
+        db.clone().into(),
+        rpc_url,
+        ws_url,
+        args.builder_url
+            .map(|url| Url::parse(&url).expect("Invalid builder URL")),
+        rand_seed,
+        &user_signers,
+        agents,
+        run_id,
+        expected_tx_count,
+    )
+    .await?;
+    let total_cost =
+        get_max_spam_cost(scenario.to_owned(), &rpc_client).await? * U256::from(duration);
+    if min_balance < U256::from(total_cost) {
+        return Err(ContenderError::SpamError(
+            "min_balance is not enough to cover the cost of the spam transactions",
+            format!(
+                "min_balance: {}, total_cost: {}",
+                format_ether(min_balance),
+                format_ether(total_cost)
             )
-                .into());
-        }
+                .into(),
+        )
+            .into());
     }
-    Ok(0)
+    // }
+    Ok(run_id)
 
 
 
