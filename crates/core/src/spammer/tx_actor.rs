@@ -201,17 +201,12 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             if !run_txs.is_empty() {
                                 all_run_txs.extend(run_txs.clone());
                                 self.db.insert_run_txs(run_id, run_txs.clone())?;
-                                let confirmed_count = self.confirmed_count + run_txs.len();
+                                self.confirmed_count += run_txs.len();
 
-                                if confirmed_count >= self.expected_tx_count {
+                                if self.confirmed_count >= self.expected_tx_count {
                                     println!("Reached expected transaction count: {}", self.expected_tx_count);
-                                    if !all_run_txs.is_empty() {
-                                        Self::print_stats(&all_run_txs);
-                                    }
-                                    self.confirmed_count = confirmed_count;
                                     return Ok(true);
                                 }
-                                self.confirmed_count = confirmed_count;
                             }
                         }
                     }
