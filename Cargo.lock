@@ -1279,6 +1279,7 @@ dependencies = [
  "alloy",
  "async-trait",
  "async-tungstenite",
+ "chrono",
  "contender_bundle_provider",
  "futures",
  "hex",

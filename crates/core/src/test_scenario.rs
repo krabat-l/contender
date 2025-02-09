@@ -440,26 +440,26 @@ where
                         ContenderError::with_err(e, "bad request: failed to build tx")
                     })?;
 
-                    println!(
-                        "sending tx {} from={} to={:?} input={} value={} gas_limit={}",
-                        tx_envelope.tx_hash(),
-                        tx_req.from.map(|s| s.encode_hex()).unwrap_or_default(),
-                        tx_envelope.to().to(),
-                        tx_req
-                            .input
-                            .input
-                            .as_ref()
-                            .map(|s| s.encode_hex())
-                            .unwrap_or_default(),
-                        tx_req
-                            .value
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "0".to_owned()),
-                        tx_req
-                            .gas
-                            .map(|g| g.to_string())
-                            .unwrap_or_else(|| "N/A".to_owned())
-                    );
+                    // println!(
+                    //     "sending tx {} from={} to={:?} input={} value={} gas_limit={}",
+                    //     tx_envelope.tx_hash(),
+                    //     tx_req.from.map(|s| s.encode_hex()).unwrap_or_default(),
+                    //     tx_envelope.to().to(),
+                    //     tx_req
+                    //         .input
+                    //         .input
+                    //         .as_ref()
+                    //         .map(|s| s.encode_hex())
+                    //         .unwrap_or_default(),
+                    //     tx_req
+                    //         .value
+                    //         .map(|s| s.to_string())
+                    //         .unwrap_or_else(|| "0".to_owned()),
+                    //     tx_req
+                    //         .gas
+                    //         .map(|g| g.to_string())
+                    //         .unwrap_or_else(|| "N/A".to_owned())
+                    // );
 
                     ExecutionPayload::SignedTx(tx_envelope, req.to_owned())
                 }

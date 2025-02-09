@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
+use chrono::Local;
 use web3::{
     futures::StreamExt,
 };
@@ -11,7 +12,6 @@ use crate::{
     db::{DbOps, RunTx},
     error::ContenderError,
 };
-use web3::types::{BlockHeader, BlockId};
 use async_tungstenite::tokio::{connect_async, ConnectStream};
 use async_tungstenite::WebSocketStream;
 use futures::SinkExt;
@@ -92,6 +92,50 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         }
     }
 
+    fn calculate_latency_stats(run_txs: &[RunTx]) -> (usize, usize, usize, f64) {
+        if run_txs.is_empty() {
+            return (0, 0, 0, 0.0);
+        }
+
+        let mut latencies: Vec<usize> = run_txs.iter()
+            .map(|tx| tx.end_timestamp - tx.start_timestamp)
+            .collect();
+
+        latencies.sort_unstable();
+        let total_txs = latencies.len();
+
+        let p50_idx = (total_txs as f64 * 0.5) as usize;
+        let p99_idx = (total_txs as f64 * 0.99) as usize;
+
+        let p50 = latencies[p50_idx];
+        let p99 = latencies[p99_idx];
+        let max = latencies[total_txs - 1];
+
+        let first_tx = run_txs.iter().min_by_key(|tx| tx.start_timestamp).unwrap();
+        let last_tx = run_txs.iter().max_by_key(|tx| tx.end_timestamp).unwrap();
+        let total_time = (last_tx.end_timestamp - first_tx.start_timestamp) as f64;
+        let throughput = if total_time > 0.0 {
+            total_txs as f64 / total_time
+        } else {
+            0.0
+        };
+
+        (p50, p99, max, throughput * 1000.0)
+    }
+
+    fn print_stats(run_txs: &[RunTx]) {
+        let (p50, p99, max, throughput) = Self::calculate_latency_stats(run_txs);
+
+        println!("\nTransaction Latency Statistics:");
+        println!("--------------------------------");
+        println!("Total Transactions: {}", run_txs.len());
+        println!("P50 Latency: {} ms", p50);
+        println!("P99 Latency: {} ms", p99);
+        println!("Max Latency: {} ms", max);
+        println!("Throughput: {:.2} tx/s", throughput);
+        println!("--------------------------------\n");
+    }
+
     async fn handle_message(
         &mut self,
         message: TxActorMessage,
@@ -103,6 +147,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 kind,
                 on_receipt,
             } => {
+                let start_timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("Time went backwards").as_millis() as usize;
                 let run_tx = PendingRunTx {
                     tx_hash,
                     start_timestamp,
@@ -112,9 +157,13 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 on_receipt.send(()).map_err(|_| {
                     ContenderError::SpamError("failed to join TxActor callback", None)
                 })?;
+                let now = Local::now();
+                println!("Current date and time: {}", now.format("%Y-%m-%d %H:%M:%S%.3f"));
             }
             TxActorMessage::FlushCache { run_id, on_flush } => {
                 println!("unconfirmed txs: {}", self.cache.len());
+                let now = Local::now();
+                println!("Current date and time: {}", now.format("%Y-%m-%d %H:%M:%S%.3f"));
 
                 if self.cache.is_empty() {
                     on_flush.send(0).map_err(|_| {
@@ -122,6 +171,9 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     })?;
                     return Ok(());
                 }
+
+                let mut all_run_txs = Vec::new();
+
 
                 while !self.cache.is_empty() {
                     while let Some(message) = self.read.next().await {
@@ -132,28 +184,38 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                     Ok(json) => {
                                         if let Some(result) = json["params"]["result"].as_object() {
                                             let block_number = result["block_number"].as_u64().unwrap_or_default();
-                                            let timestamp = result["timestamp"].as_u64().unwrap_or_default();
+                                            let fragment_index = result["index"].as_u64().unwrap_or();
                                             let gas_used = result["gas_used"].as_u64().unwrap_or_default();
                                             // Extract and print the number of transactions
                                             if let Some(transactions) = result["transactions"].as_array() {
-                                                println!("Number of transactions: {}", transactions.len());
                                                 let confirmed_tx_hashes: Vec<TxHash> = transactions
                                                     .iter()
                                                     .filter_map(|tx| tx["hash"].as_str())
-                                                    .map(|hash_str| TxHash::from_slice(&hex::decode(hash_str).unwrap()))
+                                                    .filter_map(|hash_str| {
+                                                        let hash_str = hash_str.strip_prefix("0x").unwrap_or(hash_str);
+                                                        match hex::decode(hash_str) {
+                                                            Ok(bytes) => Some(TxHash::from_slice(&bytes)),
+                                                            Err(e) => {
+                                                                eprintln!("Failed to decode hex hash {}: {:?}", hash_str, e);
+                                                                None
+                                                            }
+                                                        }
+                                                    })
                                                     .collect();
                                                 let confirmed_txs: Vec<PendingRunTx> = self.cache
                                                     .iter()
                                                     .filter(|tx| confirmed_tx_hashes.contains(&tx.tx_hash))
                                                     .cloned()
                                                     .collect();
+                                                println!("confirmed txs{} at block {}, fragments {}", confirmed_txs.len(), block_number, fragment_index);
+                                                let timestamp_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("Time went backwards").as_millis();
                                                 self.cache.retain(|tx| !confirmed_tx_hashes.contains(&tx.tx_hash));
                                                 let run_txs = confirmed_txs.clone().into_iter()
                                                     .map(|pending_tx| {
                                                         RunTx {
                                                             tx_hash: pending_tx.tx_hash,
-                                                            start_timestamp: pending_tx.start_timestamp / 1000,
-                                                            end_timestamp: timestamp as usize,
+                                                            start_timestamp: pending_tx.start_timestamp,
+                                                            end_timestamp: timestamp_ms as usize,
                                                             block_number,
                                                             gas_used: u128::from(gas_used),
                                                             kind: pending_tx.kind,
@@ -161,15 +223,16 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                                     })
                                                     .collect::<Vec<_>>();
                                                 if !run_txs.is_empty() {
+                                                    all_run_txs.extend(run_txs.clone());
                                                     self.db.insert_run_txs(run_id, run_txs)?;
 
-                                                    for tx in &confirmed_txs {
-                                                        println!(
-                                                            "tx landed. hash={}\tblock_num={}",
-                                                            tx.tx_hash,
-                                                            block_number,
-                                                        );
-                                                    }
+                                                    // for tx in &confirmed_txs {
+                                                    //     println!(
+                                                    //         "tx landed. hash={}\tblock_num={}",
+                                                    //         tx.tx_hash,
+                                                    //         block_number,
+                                                    //     );
+                                                    // }
                                                 }
                                             }
                                         }
@@ -183,6 +246,10 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             break;
                         }
                     }
+                }
+
+                if !all_run_txs.is_empty() {
+                    Self::print_stats(&all_run_txs);
                 }
 
                 on_flush.send(self.cache.len()).map_err(|_| {
