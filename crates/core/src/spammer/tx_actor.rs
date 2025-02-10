@@ -65,7 +65,7 @@ impl RpcClientPool {
 enum TxActorMessage {
     SentRunTx {
         // on_receipt: oneshot::Sender<()>,
-        tx_groups: HashMap<Address, Vec<(TxEnvelope)>>,
+        tx_groups: HashMap<Address, Vec<TxEnvelope>>,
         // rpc_client: Arc<AnyProvider>,
     },
     CheckConfirmedCount {
@@ -273,7 +273,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
                 }
 
-                let _ = client_txs.into_iter().map(|(index, txs)| {
+                let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
@@ -354,7 +354,7 @@ impl TxActorHandle {
 
     pub async fn cache_run_tx(
         &self,
-        tx_groups: HashMap<Address, Vec<(TxEnvelope)>>,
+        tx_groups: HashMap<Address, Vec<TxEnvelope>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.sender
             .send(TxActorMessage::SentRunTx {
