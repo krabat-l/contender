@@ -1,9 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 use alloy::consensus::TxEnvelope;
+use alloy::primitives::Address;
 use alloy::providers::PendingTransactionConfig;
 use alloy::rpc::client::RpcClient;
 use tokio::task::JoinHandle;
-
 use crate::generator::{types::AnyProvider, NamedTxRequest};
 
 use super::tx_actor::TxActorHandle;
@@ -18,6 +18,7 @@ where
         req: &NamedTxRequest,
         extra: Option<HashMap<K, V>>,
         signed_tx: TxEnvelope,
+        from: Address,
         tx_handler: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>>;
 }
@@ -40,6 +41,7 @@ impl OnTxSent for NilCallback {
         _req: &NamedTxRequest,
         _extra: Option<HashMap<String, String>>,
         _signed_tx: TxEnvelope,
+        _from: Address,
         _tx_handler: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>> {
         // do nothing
@@ -53,6 +55,7 @@ impl OnTxSent for LogCallback {
         _req: &NamedTxRequest,
         extra: Option<HashMap<String, String>>,
         signed_tx: TxEnvelope,
+        from: Address,
         tx_actor: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>> {
         let kind = extra
@@ -61,7 +64,7 @@ impl OnTxSent for LogCallback {
         let handle = tokio::task::spawn(async move {
             if let Some(tx_actor) = tx_actor {
                 tx_actor
-                    .cache_run_tx(kind, signed_tx)
+                    .cache_run_tx(kind, signed_tx, from)
                     .await
                     .expect("failed to cache run tx");
             }

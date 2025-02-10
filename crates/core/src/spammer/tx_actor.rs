@@ -1,5 +1,6 @@
 use std::error::Error;
-use std::sync::Arc;
+use std::sync::{Arc};
+use tokio::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use alloy::consensus::TxEnvelope;
 use alloy::network::AnyNetwork;
@@ -9,7 +10,7 @@ use web3::{
     futures::StreamExt,
 };
 use serde::{Deserialize, Serialize};
-use alloy::primitives::TxHash;
+use alloy::primitives::{Address, TxHash};
 use alloy::providers::{Provider, ProviderBuilder};
 use url::Url;
 use crate::{
@@ -31,13 +32,19 @@ pub struct TransactionSigned {
 }
 
 pub struct RpcClientPool {
-    clients: Vec<Arc<AnyProvider>>,
+    address_clients: DashMap<Address, Arc<AddressClient>>,
+    base_clients: Vec<Arc<AnyProvider>>,
     next_index: AtomicUsize,
+}
+
+struct AddressClient {
+    client: Arc<AnyProvider>,
+    last_used: Mutex<u64>,
 }
 
 impl RpcClientPool {
     pub fn new(rpc_url: Url, pool_size: usize) -> Self {
-        let clients: Vec<Arc<AnyProvider>> = (0..pool_size).map(|_| {
+        let base_clients: Vec<Arc<AnyProvider>> = (0..pool_size).map(|_| {
             Arc::new(
                 ProviderBuilder::new()
                     .network::<AnyNetwork>()
@@ -46,14 +53,29 @@ impl RpcClientPool {
         }).collect();
 
         Self {
-            clients,
+            address_clients: DashMap::new(),
+            base_clients,
             next_index: AtomicUsize::new(0),
         }
     }
+    pub async fn get_client_for_address(&self, address: Address) -> Arc<AnyProvider> {
+        // Try to get existing client for this address
+        if let Some(address_client) = self.address_clients.get(&address) {
+            let mut last_used = address_client.last_used.lock().await;
+            *last_used = chrono::Utc::now().timestamp_millis() as u64;
+            return address_client.client.clone();
+        }
 
-    pub fn get_client(&self) -> Arc<AnyProvider> {
-        let index = self.next_index.fetch_add(1, Ordering::Relaxed) % self.clients.len();
-        self.clients[index].clone()
+        // Create new client for this address
+        let index = self.next_index.fetch_add(1, Ordering::Relaxed) % self.base_clients.len();
+        let client = self.base_clients[index].clone();
+
+        self.address_clients.insert(address, Arc::new(AddressClient {
+            client: client.clone(),
+            last_used: Mutex::new(chrono::Utc::now().timestamp_millis() as u64),
+        }));
+
+        client
     }
 }
 
@@ -63,6 +85,7 @@ enum TxActorMessage {
         // on_receipt: oneshot::Sender<()>,
         signed_tx: TxEnvelope,
         // rpc_client: Arc<AnyProvider>,
+        from: Address,
     },
     CheckConfirmedCount {
         response: oneshot::Sender<usize>,
@@ -114,7 +137,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 10));
+        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 20));
         Self {
             receiver,
             db,
@@ -250,17 +273,15 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         }
         Ok(false)
     }
-
-    async fn handle_message(
+     async fn handle_message(
         &mut self,
         message: TxActorMessage,
     ) -> Result<(), Box<dyn Error>> {
         match message {
             TxActorMessage::SentRunTx {
                 kind,
-                // on_receipt,
                 signed_tx,
-                // rpc_client,
+                from,
             } => {
                 let start_timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -273,7 +294,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     kind,
                 });
 
-                let client = self.client_pool.get_client();
+                // Get client specific to this address
+                let client = self.client_pool.get_client_for_address(from).await;
                 let signed_tx_clone = signed_tx.to_owned();
                 let sent_count_clone = self.sent_count.clone();
 
@@ -287,6 +309,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 });
             }
             TxActorMessage::CheckConfirmedCount { response } => {
+                // Same as before...
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
                     ContenderError::SpamError("failed to send confirmed count", None)
                 })?;
@@ -347,17 +370,15 @@ impl TxActorHandle {
         &self,
         kind: Option<String>,
         signed_tx: TxEnvelope,
-        // rpc_client: Arc<AnyProvider>,
+        from: Address,  // New parameter
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // let (sender, receiver) = oneshot::channel();
         self.sender
             .send(TxActorMessage::SentRunTx {
                 kind,
                 signed_tx,
-                // rpc_client,
+                from,
             })
             .await?;
-        // receiver.await?;
         Ok(())
     }
 

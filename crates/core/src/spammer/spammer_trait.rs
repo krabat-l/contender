@@ -68,8 +68,6 @@ where
                 prepared_payloads.push(scenario.prepare_spam(chunk).await?);
             }
 
-            println!("nonces map: {:#?}", scenario.nonces);
-
             let mut tick = 0;
             // let mut cursor = self.on_spam(scenario).await?;
 
