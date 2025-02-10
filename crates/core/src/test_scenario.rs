@@ -9,7 +9,7 @@ use crate::generator::{seeder::Seeder, types::PlanType, Generator, PlanConfig};
 use crate::spammer::tx_actor::TxActorHandle;
 use crate::spammer::{ExecutionPayload, OnTxSent, SpamTrigger};
 use crate::Result;
-use alloy::consensus::Transaction;
+use alloy::consensus::{Transaction, TxEnvelope};
 use alloy::eips::eip2718::Encodable2718;
 use alloy::hex::ToHexExt;
 use alloy::network::{AnyNetwork, EthereumWallet, TransactionBuilder};
@@ -474,39 +474,33 @@ where
         callback_handler: Arc<impl OnTxSent + Send + Sync + 'static>,
     ) -> Result<Vec<tokio::task::JoinHandle<()>>> {
         let payloads = payloads.to_owned();
-
         let mut tasks: Vec<tokio::task::JoinHandle<()>> = vec![];
 
+        let mut tx_groups: HashMap<Address, Vec<TxEnvelope>> = HashMap::new();
+
         for payload in payloads {
-            let callback_handler = callback_handler.clone();
-            let tx_handler = self.msg_handle.clone();
-
-            tasks.push(tokio::task::spawn(async move {
-                let mut extra = HashMap::new();
-                let start_timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("time went backwards")
-                    .as_millis();
-                extra.insert("start_timestamp".to_owned(), start_timestamp.to_string());
-                let handles = match payload.to_owned() {
-                    ExecutionPayload::SignedTx(signed_tx, req) => {
-                        let maybe_handle = callback_handler.on_tx_sent(
-                            &req,
-                            Some(extra),
-                            signed_tx.to_owned(),
-                            req.tx.from.unwrap_or_default(),
-                            Some(tx_handler.clone()),
-                        );
-                        vec![maybe_handle]
-                    }
-                    ExecutionPayload::SignedTxBundle(signed_txs, reqs) => {todo!()}
-                };
-
-                for handle in handles.into_iter().flatten() {
-                    // ignore None values so we don't attempt to await them
-                    handle.await.expect("msg handle failed");
+            match payload {
+                ExecutionPayload::SignedTx(signed_tx, req) => {
+                    let from = req.tx.from.unwrap_or_default();
+                    tx_groups
+                        .entry(from)
+                        .or_default()
+                        .push(signed_tx);
                 }
-            }));
+                ExecutionPayload::SignedTxBundle(_, _) => todo!(),
+            }
+        }
+
+        println!("Total unique addresses: {}", tx_groups.clone().len());
+
+        let callback_handler = callback_handler.clone();
+        let tx_handler = self.msg_handle.clone();
+
+        if let Some(handle) = callback_handler.on_tx_sent(
+            tx_groups,
+            Some(tx_handler),
+        ) {
+            handle.await.expect("msg handle failed");
         }
 
         Ok(tasks)

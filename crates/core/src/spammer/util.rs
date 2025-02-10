@@ -23,10 +23,7 @@ pub mod test {
     impl OnTxSent<String> for MockCallback {
         fn on_tx_sent(
             &self,
-            _req: &NamedTxRequest,
-            _extra: Option<HashMap<String, String>>,
-            _signed_tx: TxEnvelope,
-            _from: Address,
+            _signed_tx: HashMap<Address, Vec<(TxEnvelope)>>,
             _tx_handler: Option<Arc<TxActorHandle>>,
         ) -> Option<JoinHandle<()>> {
             // println!("MockCallback::on_tx_sent: tx_hash={}", _tx_res.tx_hash());

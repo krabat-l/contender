@@ -15,10 +15,7 @@ where
 {
     fn on_tx_sent(
         &self,
-        req: &NamedTxRequest,
-        extra: Option<HashMap<K, V>>,
-        signed_tx: TxEnvelope,
-        from: Address,
+        signed_tx: HashMap<Address, Vec<(TxEnvelope)>>,
         tx_handler: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>>;
 }
@@ -38,10 +35,7 @@ impl LogCallback {
 impl OnTxSent for NilCallback {
     fn on_tx_sent(
         &self,
-        _req: &NamedTxRequest,
-        _extra: Option<HashMap<String, String>>,
-        _signed_tx: TxEnvelope,
-        _from: Address,
+        _signed_tx: HashMap<Address, Vec<(TxEnvelope)>>,
         _tx_handler: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>> {
         // do nothing
@@ -52,19 +46,13 @@ impl OnTxSent for NilCallback {
 impl OnTxSent for LogCallback {
     fn on_tx_sent(
         &self,
-        _req: &NamedTxRequest,
-        extra: Option<HashMap<String, String>>,
-        signed_tx: TxEnvelope,
-        from: Address,
+        signed_tx: HashMap<Address, Vec<(TxEnvelope)>>,
         tx_actor: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>> {
-        let kind = extra
-            .as_ref()
-            .and_then(|e| e.get("kind").map(|k| k.to_string()));
         let handle = tokio::task::spawn(async move {
             if let Some(tx_actor) = tx_actor {
                 tx_actor
-                    .cache_run_tx(kind, signed_tx, from)
+                    .cache_run_tx(signed_tx)
                     .await
                     .expect("failed to cache run tx");
             }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::io::Read;
 use std::sync::{Arc};
@@ -34,18 +35,18 @@ pub struct TransactionSigned {
 }
 
 pub struct RpcClientPool {
-    clients: Vec<Arc<Mutex<AnyProvider>>>,
+    clients: Vec<Arc<AnyProvider>>,
     pool_size: usize,
 }
 impl RpcClientPool {
     pub fn new(rpc_url: Url, pool_size: usize) -> Self {
-        let clients: Vec<Arc<Mutex<AnyProvider>>> = (0..pool_size)
+        let clients: Vec<Arc<AnyProvider>> = (0..pool_size)
             .map(|_| {
-                Arc::new(Mutex::new(
+                Arc::new(
                     ProviderBuilder::new()
                         .network::<AnyNetwork>()
                         .on_http(rpc_url.to_owned())
-                ))
+                )
             })
             .collect();
 
@@ -55,22 +56,17 @@ impl RpcClientPool {
         }
     }
 
-    pub async fn get_client_for_address(&self, address: Address) -> Arc<Mutex<AnyProvider>> {
-        let addr_bytes = address.to_vec();
-        let last_four_bytes = &addr_bytes[16..20];
-        let num = u32::from_be_bytes(last_four_bytes.try_into().unwrap());
-        let index = num as usize % self.pool_size;
+    pub fn get_client_for_address(&self, num: &usize) -> Arc<AnyProvider> {
+        let index = num % self.pool_size;
         self.clients[index].clone()
     }
 }
 
 enum TxActorMessage {
     SentRunTx {
-        kind: Option<String>,
         // on_receipt: oneshot::Sender<()>,
-        signed_tx: TxEnvelope,
+        tx_groups: HashMap<Address, Vec<(TxEnvelope)>>,
         // rpc_client: Arc<AnyProvider>,
-        from: Address,
     },
     CheckConfirmedCount {
         response: oneshot::Sender<usize>,
@@ -81,15 +77,13 @@ enum TxActorMessage {
 pub struct PendingRunTx {
     tx_hash: TxHash,
     start_timestamp: usize,
-    kind: Option<String>,
 }
 
 impl PendingRunTx {
-    pub fn new(tx_hash: TxHash, start_timestamp: usize, kind: Option<&str>) -> Self {
+    pub fn new(tx_hash: TxHash, start_timestamp: usize) -> Self {
         Self {
             tx_hash,
             start_timestamp,
-            kind: kind.map(|s| s.to_owned()),
         }
     }
 }
@@ -122,7 +116,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 20));
+        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 50));
         Self {
             receiver,
             db,
@@ -175,16 +169,19 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         let start_time = DateTime::from_timestamp_millis(start as i64);
         let end_time = DateTime::from_timestamp_millis(end as i64);
 
+        let sent_count = self.sent_count.load(Ordering::Relaxed);
+        let confirmed_count = self.confirmed_count;
+        let queued_on_chain_count = sent_count - confirmed_count;
+        let queued_count = self.pending_txs.len();
         println!("\nTransaction Latency Statistics:");
         println!("--------------------------------");
-        println!("Total Transactions: {}", run_txs.len());
-        println!(
-            "Statistics - Sent: {}, Confirmed: {}, Pending: {}, Total: {}",
-            self.sent_count.load(Ordering::Relaxed),
-            self.confirmed_count,
-            self.pending_txs.len(),
-            self.expected_tx_count
-        );
+        println!("Sent: {}", sent_count);
+        println!("Confirmed: {}", confirmed_count);
+        println!("Queuing on chain: {}", queued_on_chain_count);
+        println!("Queuing on client: {}", queued_count - queued_on_chain_count);
+        println!("Queuing: {}", queued_count);
+        println!("Current: {}", self.expected_tx_count - confirmed_count);
+        println!("Total: {}", self.expected_tx_count);
         println!("Start Time: {:?}", start_time);
         println!("End Time: {:?}", end_time);
         println!("P50 Latency: {} ms", p50);
@@ -225,7 +222,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                             end_timestamp: timestamp_ms,
                                             block_number,
                                             gas_used: u128::from(gas_used),
-                                            kind: pending_tx.kind,
+                                            kind: None,
                                         });
                                     }
                                 }
@@ -264,36 +261,45 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     ) -> Result<(), Box<dyn Error>> {
         match message {
             TxActorMessage::SentRunTx {
-                kind,
-                signed_tx,
-                from,
+                tx_groups,
             } => {
-                let start_timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("time went backwards")
-                    .as_millis();
-                let tx_hash = signed_tx.tx_hash();
-                self.pending_txs.insert(*tx_hash, PendingRunTx {
-                    tx_hash: *tx_hash,
-                    start_timestamp: start_timestamp as usize,
-                    kind,
-                });
 
-                // Get client specific to this address
-                let client_mutex = self.client_pool.get_client_for_address(from).await;
-                let sent_count_clone = self.sent_count.clone();
-                let signed_tx_clone = signed_tx.to_owned();
+                let mut client_txs = HashMap::new();
+                for (from, txs) in tx_groups {
+                    let addr_bytes = from.to_vec();
+                    let prefix = &addr_bytes[0..4];
+                    let num = u32::from_be_bytes(prefix.try_into().unwrap());
+                    let index = num as usize % self.client_pool.pool_size;
+                    client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
+                }
 
-                tokio::spawn(async move {
-                    let client = client_mutex.lock().await;
-                    let result = client
-                        .send_tx_envelope(signed_tx_clone)
-                        .await;
-                    sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                });
+                let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
+                    let sent_count_clone = self.sent_count.clone();
+                    let client_pool_clone = self.client_pool.clone();
+                    let pending_txs_clone = self.pending_txs.clone();
+                    tokio::spawn(async move {
+                        let client = client_pool_clone.get_client_for_address(&index);
+                        for tx in txs {
+                            let start_timestamp = SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .expect("time went backwards")
+                                .as_millis();
+                            let tx_hash = tx.tx_hash();
+                            pending_txs_clone.insert(*tx_hash, PendingRunTx {
+                                tx_hash: *tx_hash,
+                                start_timestamp: start_timestamp as usize,
+                            });
+                            let _ = client.send_tx_envelope(tx).await;
+                            sent_count_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    })
+                }).collect();
+
+                for task in tasks {
+                    let _ = task.await;
+                }
             }
             TxActorMessage::CheckConfirmedCount { response } => {
-                // Same as before...
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
                     ContenderError::SpamError("failed to send confirmed count", None)
                 })?;
@@ -352,15 +358,11 @@ impl TxActorHandle {
 
     pub async fn cache_run_tx(
         &self,
-        kind: Option<String>,
-        signed_tx: TxEnvelope,
-        from: Address,  // New parameter
+        tx_groups: HashMap<Address, Vec<(TxEnvelope)>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.sender
             .send(TxActorMessage::SentRunTx {
-                kind,
-                signed_tx,
-                from,
+                tx_groups,
             })
             .await?;
         Ok(())
