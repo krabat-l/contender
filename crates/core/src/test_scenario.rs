@@ -502,14 +502,11 @@ where
                 extra.insert("start_timestamp".to_owned(), start_timestamp.to_string());
                 let handles = match payload.to_owned() {
                     ExecutionPayload::SignedTx(signed_tx, req) => {
-                        let res = rpc_client
-                            .send_tx_envelope(signed_tx.to_owned())
-                            .await
-                            .expect("failed to send tx envelope");
                         let maybe_handle = callback_handler.on_tx_sent(
-                            res.into_inner(),
                             &req,
                             Some(extra),
+                            signed_tx.to_owned(),
+                            rpc_client,
                             Some(tx_handler.clone()),
                         );
                         vec![maybe_handle]
@@ -559,15 +556,15 @@ where
                         }
 
                         let mut tx_handles = vec![];
-                        for (tx, req) in signed_txs.into_iter().zip(reqs) {
-                            let maybe_handle = callback_handler.on_tx_sent(
-                                PendingTransactionConfig::new(*tx.tx_hash()),
-                                &req,
-                                Some(extra.clone()),
-                                Some(tx_handler.clone()),
-                            );
-                            tx_handles.push(maybe_handle);
-                        }
+                        // for (tx, req) in signed_txs.into_iter().zip(reqs) {
+                        //     let maybe_handle = callback_handler.on_tx_sent(
+                        //         PendingTransactionConfig::new(*tx.tx_hash()),
+                        //         &req,
+                        //         Some(extra.clone()),
+                        //         Some(tx_handler.clone()),
+                        //     );
+                        //     tx_handles.push(maybe_handle);
+                        // }
                         tx_handles
                     }
                 };

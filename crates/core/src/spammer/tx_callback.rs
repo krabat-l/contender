@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
-
+use alloy::consensus::TxEnvelope;
 use alloy::providers::PendingTransactionConfig;
+use alloy::rpc::client::RpcClient;
 use tokio::task::JoinHandle;
 
 use crate::generator::{types::AnyProvider, NamedTxRequest};
@@ -14,9 +15,10 @@ where
 {
     fn on_tx_sent(
         &self,
-        tx_response: PendingTransactionConfig,
         req: &NamedTxRequest,
         extra: Option<HashMap<K, V>>,
+        signed_tx: TxEnvelope,
+        rpc_client: Arc<AnyProvider>,
         tx_handler: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>>;
 }
@@ -36,9 +38,10 @@ impl LogCallback {
 impl OnTxSent for NilCallback {
     fn on_tx_sent(
         &self,
-        _tx_res: PendingTransactionConfig,
         _req: &NamedTxRequest,
         _extra: Option<HashMap<String, String>>,
+        _signed_tx: TxEnvelope,
+        _rpc_client: Arc<AnyProvider>,
         _tx_handler: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>> {
         // do nothing
@@ -49,22 +52,19 @@ impl OnTxSent for NilCallback {
 impl OnTxSent for LogCallback {
     fn on_tx_sent(
         &self,
-        tx_response: PendingTransactionConfig,
         _req: &NamedTxRequest,
         extra: Option<HashMap<String, String>>,
+        signed_tx: TxEnvelope,
+        rpc_client: Arc<AnyProvider>,
         tx_actor: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>> {
-        let start_timestamp = extra
-            .as_ref()
-            .and_then(|e| e.get("start_timestamp").map(|t| t.parse::<usize>()))?
-            .unwrap_or(0);
         let kind = extra
             .as_ref()
             .and_then(|e| e.get("kind").map(|k| k.to_string()));
         let handle = tokio::task::spawn(async move {
             if let Some(tx_actor) = tx_actor {
                 tx_actor
-                    .cache_run_tx(*tx_response.tx_hash(), start_timestamp, kind)
+                    .cache_run_tx(kind, signed_tx, rpc_client)
                     .await
                     .expect("failed to cache run tx");
             }

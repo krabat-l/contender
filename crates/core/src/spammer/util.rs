@@ -10,23 +10,26 @@ pub mod test {
         rpc::types::TransactionRequest,
         signers::local::PrivateKeySigner,
     };
+    use alloy::consensus::TxEnvelope;
     use tokio::task::JoinHandle;
 
     use crate::{
         generator::{types::EthProvider, NamedTxRequest},
         spammer::{tx_actor::TxActorHandle, OnTxSent},
     };
+    use crate::generator::types::AnyProvider;
 
     pub struct MockCallback;
     impl OnTxSent<String> for MockCallback {
         fn on_tx_sent(
             &self,
-            _tx_res: PendingTransactionConfig,
             _req: &NamedTxRequest,
             _extra: Option<HashMap<String, String>>,
+            _signed_tx: TxEnvelope,
+            _rpc_client: Arc<AnyProvider>,
             _tx_handler: Option<Arc<TxActorHandle>>,
         ) -> Option<JoinHandle<()>> {
-            println!("MockCallback::on_tx_sent: tx_hash={}", _tx_res.tx_hash());
+            // println!("MockCallback::on_tx_sent: tx_hash={}", _tx_res.tx_hash());
             None
         }
     }

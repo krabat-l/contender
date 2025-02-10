@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
+use alloy::consensus::TxEnvelope;
 use tokio::sync::{mpsc, oneshot};
 use dashmap::DashMap;
 use web3::{
@@ -7,6 +8,7 @@ use web3::{
 };
 use serde::{Deserialize, Serialize};
 use alloy::primitives::TxHash;
+use alloy::providers::Provider;
 use url::Url;
 use crate::{
     db::{DbOps, RunTx},
@@ -14,22 +16,11 @@ use crate::{
 };
 use async_tungstenite::tokio::{connect_async, ConnectStream};
 use async_tungstenite::WebSocketStream;
+use chrono::{DateTime, Duration, NaiveDateTime};
 use futures::SinkExt;
 use futures::stream::SplitStream;
 use serde_json::Value;
-
-#[derive(Debug, Deserialize)]
-struct FragmentResponse {
-    payload_id: String,
-    block_number: u64,
-    index: u64,
-    tx_offset: u64,
-    log_offset: u64,
-    gas_offset: u64,
-    timestamp: u64,
-    gas_used: u64,
-    transactions: Vec<TransactionSigned>,
-}
+use crate::generator::types::AnyProvider;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct TransactionSigned {
@@ -38,10 +29,10 @@ pub struct TransactionSigned {
 
 enum TxActorMessage {
     SentRunTx {
-        tx_hash: TxHash,
-        start_timestamp: usize,
         kind: Option<String>,
         on_receipt: oneshot::Sender<()>,
+        signed_tx: TxEnvelope,
+        rpc_client: Arc<AnyProvider>,
     },
     CheckConfirmedCount {
         response: oneshot::Sender<usize>,
@@ -65,23 +56,15 @@ impl PendingRunTx {
     }
 }
 
-#[derive(Debug)]
-struct ConfirmedTxInfo {
-    block_number: u64,
-    gas_used: u64,
-    timestamp: usize,
-}
-
-
 struct TxActor<D> where D: DbOps {
     receiver: mpsc::Receiver<TxActorMessage>,
     db: Arc<D>,
     pending_txs: Arc<DashMap<TxHash, PendingRunTx>>,
-    confirmed_txs: Arc<DashMap<TxHash, ConfirmedTxInfo>>,
     read: SplitStream<WebSocketStream<ConnectStream>>,
     run_id: Option<u64>,
     expected_tx_count: usize,
     confirmed_count: usize,
+    sent_count: usize,
     all_run_txs: Vec<RunTx>,
 }
 
@@ -104,39 +87,19 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             receiver,
             db,
             pending_txs: Arc::new(DashMap::new()),
-            confirmed_txs: Arc::new(DashMap::new()),
             read,
             run_id: Some(run_id),
             expected_tx_count,
             confirmed_count: 0,
+            sent_count: 0,
             all_run_txs: Vec::new(),
         }
     }
 
-    fn try_match_and_process_tx(
-        &mut self,
-        tx_hash: TxHash,
-        pending_tx: Option<PendingRunTx>,
-        confirmed_info: Option<ConfirmedTxInfo>,
-    ) -> Option<RunTx> {
-        match (pending_tx, confirmed_info) {
-            (Some(pending), Some(confirmed)) => {
-                Some(RunTx {
-                    tx_hash,
-                    start_timestamp: pending.start_timestamp,
-                    end_timestamp: confirmed.timestamp,
-                    block_number: confirmed.block_number,
-                    gas_used: u128::from(confirmed.gas_used),
-                    kind: pending.kind,
-                })
-            }
-            _ => None
-        }
-    }
 
-    fn calculate_latency_stats(run_txs: &[RunTx]) -> (usize, usize, usize, f64) {
+    fn calculate_latency_stats(run_txs: &[RunTx]) -> (usize, usize, usize, usize, usize, f64) {
         if run_txs.is_empty() {
-            return (0, 0, 0, 0.0);
+            return (0, 0, 0, 0, 0, 0.0);
         }
 
         let mut latencies: Vec<usize> = run_txs.iter()
@@ -162,15 +125,20 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             0.0
         };
 
-        (p50, p99, max, throughput * 1000.0)
+        (first_tx.start_timestamp, last_tx.end_timestamp, p50, p99, max, throughput * 1000.0)
     }
 
     fn print_stats(run_txs: &[RunTx]) {
-        let (p50, p99, max, throughput) = Self::calculate_latency_stats(run_txs);
+        let (start, end, p50, p99, max, throughput) = Self::calculate_latency_stats(run_txs);
+
+        let start_time = DateTime::from_timestamp_millis(start as i64);
+        let end_time = DateTime::from_timestamp_millis(end as i64);
 
         println!("\nTransaction Latency Statistics:");
         println!("--------------------------------");
         println!("Total Transactions: {}", run_txs.len());
+        println!("Start Time: {:?}", start_time);
+        println!("End Time: {:?}", end_time);
         println!("P50 Latency: {} ms", p50);
         println!("P99 Latency: {} ms", p99);
         println!("Max Latency: {} ms", max);
@@ -184,6 +152,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 if let Some(result) = json["params"]["result"].as_object() {
                     let block_number = result["block_number"].as_u64().unwrap_or_default();
                     let fragment_index = result["index"].as_u64().unwrap_or_default();
+                    let tx_offset = result["tx_offset"].as_u64().unwrap_or_default();
                     let gas_used = result["gas_used"].as_u64().unwrap_or_default();
 
                     if let Some(transactions) = result["transactions"].as_array() {
@@ -202,23 +171,13 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
 
                                     // Try to match with pending tx
                                     if let Some((_, pending_tx)) = self.pending_txs.remove(&tx_hash) {
-                                        if let Some(run_tx) = self.try_match_and_process_tx(
+                                        new_confirmed_txs.push(RunTx {
                                             tx_hash,
-                                            Some(pending_tx),
-                                            Some(ConfirmedTxInfo {
-                                                block_number,
-                                                gas_used,
-                                                timestamp: timestamp_ms,
-                                            })
-                                        ) {
-                                            new_confirmed_txs.push(run_tx);
-                                        }
-                                    } else {
-                                        // Store confirmation info for future matching
-                                        self.confirmed_txs.insert(tx_hash, ConfirmedTxInfo {
+                                            start_timestamp: pending_tx.start_timestamp,
+                                            end_timestamp: timestamp_ms,
                                             block_number,
-                                            gas_used,
-                                            timestamp: timestamp_ms,
+                                            gas_used: u128::from(gas_used),
+                                            kind: pending_tx.kind,
                                         });
                                     }
                                 }
@@ -226,9 +185,11 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
 
                         if !new_confirmed_txs.is_empty() {
-                            println!("confirmed {} txs at block {}, fragment {}, unconfirmed txs count: {}",
-                                     new_confirmed_txs.len(), block_number, fragment_index,
-                                     self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len());
+                            println!("confirmed {}/{} txs at fragment {}, block {}, current block tx count: {}, remaining: {}/{}",
+                                     new_confirmed_txs.len(), transactions.len(), fragment_index,
+                                     block_number, tx_offset as usize + transactions.len(),
+                                     self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len(),
+                                     self.expected_tx_count);
 
                             if let Some(run_id) = self.run_id {
                                 self.all_run_txs.extend(new_confirmed_txs.clone());
@@ -256,38 +217,29 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     ) -> Result<(), Box<dyn Error>> {
         match message {
             TxActorMessage::SentRunTx {
-                tx_hash,
-                start_timestamp,
                 kind,
                 on_receipt,
+                signed_tx,
+                rpc_client,
             } => {
-                // Check if we already have confirmation for this tx
-                if let Some((_, confirmed_info)) = self.confirmed_txs.remove(&tx_hash) {
-                    let pending_tx = PendingRunTx {
-                        tx_hash,
-                        start_timestamp,
-                        kind,
-                    };
+                let start_timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("time went backwards")
+                    .as_millis();
+                let res = rpc_client
+                    .send_tx_envelope(signed_tx.to_owned())
+                    .await
+                    .expect("failed to send tx envelope");
+                let res_inner = res.into_inner();
+                let tx_hash = res_inner.tx_hash();
+                // Store pending tx for future matching
+                self.pending_txs.insert(*tx_hash, PendingRunTx {
+                    tx_hash: *tx_hash,
+                    start_timestamp: start_timestamp as usize,
+                    kind,
+                });
 
-                    if let Some(run_tx) = self.try_match_and_process_tx(
-                        tx_hash,
-                        Some(pending_tx),
-                        Some(confirmed_info)
-                    ) {
-                        if let Some(run_id) = self.run_id {
-                            self.all_run_txs.push(run_tx.clone());
-                            self.db.insert_run_txs(run_id, vec![run_tx])?;
-                            self.confirmed_count += 1;
-                        }
-                    }
-                } else {
-                    // Store pending tx for future matching
-                    self.pending_txs.insert(tx_hash, PendingRunTx {
-                        tx_hash,
-                        start_timestamp,
-                        kind,
-                    });
-                }
+                self.sent_count += 1;
 
                 on_receipt.send(()).map_err(|_| {
                     ContenderError::SpamError("failed to join TxActor callback", None)
@@ -302,9 +254,22 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         Ok(())
     }
 
-    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
             tokio::select! {
+                _ = interval.tick() => {
+                    println!(
+                        "Statistics - Sent: {}, Confirmed: {}, Pending: {}, Total: {}",
+                        self.sent_count,
+                        self.confirmed_count,
+                        self.pending_txs.len(),
+                        self.expected_tx_count
+                    );
+                    if !self.all_run_txs.is_empty() {
+                        Self::print_stats(&self.all_run_txs);
+                    }
+                }
                 Some(msg) = self.receiver.recv() => {
                     self.handle_message(msg).await?;
                 }
@@ -345,17 +310,17 @@ impl TxActorHandle {
 
     pub async fn cache_run_tx(
         &self,
-        tx_hash: TxHash,
-        start_timestamp: usize,
         kind: Option<String>,
+        signed_tx: TxEnvelope,
+        rpc_client: Arc<AnyProvider>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (sender, receiver) = oneshot::channel();
         self.sender
             .send(TxActorMessage::SentRunTx {
-                tx_hash,
-                start_timestamp,
                 kind,
                 on_receipt: sender,
+                signed_tx,
+                rpc_client,
             })
             .await?;
         receiver.await?;

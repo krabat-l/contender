@@ -9,13 +9,12 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     transports::http::reqwest::Url,
 };
-use alloy::providers::WsConnect;
 use contender_core::{
     agent_controller::{AgentStore, SignerStore},
     db::DbOps,
     error::ContenderError,
     generator::{seeder::Seeder, types::AnyProvider, Generator, PlanType, RandSeed},
-    spammer::{BlockwiseSpammer, ExecutionPayload, Spammer, TimedSpammer},
+    spammer::{ExecutionPayload, Spammer, TimedSpammer},
     test_scenario::TestScenario,
 };
 use contender_testfile::TestConfig;
