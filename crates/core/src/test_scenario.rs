@@ -479,7 +479,7 @@ where
 
     pub async fn execute_spam(
         &mut self,
-        trigger: SpamTrigger,
+        // trigger: SpamTrigger,
         payloads: &[ExecutionPayload],
         callback_handler: Arc<impl OnTxSent + Send + Sync + 'static>,
     ) -> Result<Vec<tokio::task::JoinHandle<()>>> {
@@ -511,51 +511,52 @@ where
                         );
                         vec![maybe_handle]
                     }
-                    ExecutionPayload::SignedTxBundle(signed_txs, reqs) => {
-                        let mut bundle_txs = vec![];
-                        for tx in &signed_txs {
-                            let mut raw_tx = vec![];
-                            tx.encode_2718(&mut raw_tx);
-                            bundle_txs.push(raw_tx);
-                        }
-                        let block_num = match trigger {
-                            SpamTrigger::BlockNumber(n) => n,
-                            SpamTrigger::BlockHash(h) => {
-                                let block = rpc_client
-                                    .get_block_by_hash(
-                                        h,
-                                        alloy::rpc::types::BlockTransactionsKind::Hashes,
-                                    )
-                                    .await
-                                    .expect("failed to get block")
-                                    .expect("block not found");
-                                block.header.number
-                            }
-                            _ => rpc_client
-                                .get_block_number()
-                                .await
-                                .expect("failed to get block number"),
-                        };
-                        let rpc_bundle = new_basic_bundle(
-                            bundle_txs.into_iter().map(|b| b.into()).collect(),
-                            block_num,
-                        );
-                        if let Some(bundle_client) = bundle_client {
-                            println!("spamming bundle: {:?}", rpc_bundle);
-                            for i in 1..4 {
-                                let mut rpc_bundle = rpc_bundle.clone();
-                                rpc_bundle.block_number = block_num + i as u64;
-
-                                let res = bundle_client.send_bundle(rpc_bundle).await;
-                                if let Err(e) = res {
-                                    eprintln!("failed to send bundle: {:?}", e);
-                                }
-                            }
-                        } else {
-                            panic!("bundle client not found");
-                        }
-
-                        let mut tx_handles = vec![];
+                    ExecutionPayload::SignedTxBundle(signed_txs, reqs) => {todo!()}
+                    // ExecutionPayload::SignedTxBundle(signed_txs, reqs) => {
+                    //     let mut bundle_txs = vec![];
+                    //     for tx in &signed_txs {
+                    //         let mut raw_tx = vec![];
+                    //         tx.encode_2718(&mut raw_tx);
+                    //         bundle_txs.push(raw_tx);
+                    //     }
+                    //     let block_num = match trigger {
+                    //         SpamTrigger::BlockNumber(n) => n,
+                    //         SpamTrigger::BlockHash(h) => {
+                    //             let block = rpc_client
+                    //                 .get_block_by_hash(
+                    //                     h,
+                    //                     alloy::rpc::types::BlockTransactionsKind::Hashes,
+                    //                 )
+                    //                 .await
+                    //                 .expect("failed to get block")
+                    //                 .expect("block not found");
+                    //             block.header.number
+                    //         }
+                    //         _ => rpc_client
+                    //             .get_block_number()
+                    //             .await
+                    //             .expect("failed to get block number"),
+                    //     };
+                    //     let rpc_bundle = new_basic_bundle(
+                    //         bundle_txs.into_iter().map(|b| b.into()).collect(),
+                    //         block_num,
+                    //     );
+                    //     if let Some(bundle_client) = bundle_client {
+                    //         println!("spamming bundle: {:?}", rpc_bundle);
+                    //         for i in 1..4 {
+                    //             let mut rpc_bundle = rpc_bundle.clone();
+                    //             rpc_bundle.block_number = block_num + i as u64;
+                    //
+                    //             let res = bundle_client.send_bundle(rpc_bundle).await;
+                    //             if let Err(e) = res {
+                    //                 eprintln!("failed to send bundle: {:?}", e);
+                    //             }
+                    //         }
+                    //     } else {
+                    //         panic!("bundle client not found");
+                    //     }
+                    //
+                    //     let mut tx_handles = vec![];
                         // for (tx, req) in signed_txs.into_iter().zip(reqs) {
                         //     let maybe_handle = callback_handler.on_tx_sent(
                         //         PendingTransactionConfig::new(*tx.tx_hash()),
@@ -565,8 +566,8 @@ where
                         //     );
                         //     tx_handles.push(maybe_handle);
                         // }
-                        tx_handles
-                    }
+                        // tx_handles
+                    // }
                 };
 
                 for handle in handles.into_iter().flatten() {
