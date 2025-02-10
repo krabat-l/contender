@@ -18,7 +18,6 @@ use crate::{
 use async_tungstenite::tokio::{connect_async, ConnectStream};
 use async_tungstenite::WebSocketStream;
 use chrono::{DateTime, Duration, NaiveDateTime};
-use futures::executor::ThreadPool;
 use futures::SinkExt;
 use futures::stream::SplitStream;
 use serde_json::Value;
