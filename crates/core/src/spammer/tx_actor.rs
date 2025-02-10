@@ -18,9 +18,11 @@ use crate::{
 use async_tungstenite::tokio::{connect_async, ConnectStream};
 use async_tungstenite::WebSocketStream;
 use chrono::{DateTime, Duration, NaiveDateTime};
+use futures::executor::ThreadPool;
 use futures::SinkExt;
 use futures::stream::SplitStream;
 use serde_json::Value;
+use threadpool::ThreadPool;
 use crate::generator::types::AnyProvider;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -92,7 +94,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             run_id: Some(run_id),
             expected_tx_count,
             confirmed_count: 0,
-            sent_count: 0,
+            sent_count: Arc::new(AtomicUsize::new(0)),
             all_run_txs: Vec::new(),
         }
     }
@@ -234,24 +236,32 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("time went backwards")
                     .as_millis();
-                let res = rpc_client
-                    .send_tx_envelope(signed_tx.to_owned())
-                    .await
-                    .expect("failed to send tx envelope");
-                let res_inner = res.into_inner();
-                let tx_hash = res_inner.tx_hash();
-                // Store pending tx for future matching
-                self.pending_txs.insert(*tx_hash, PendingRunTx {
-                    tx_hash: *tx_hash,
-                    start_timestamp: start_timestamp as usize,
-                    kind,
+                let pool = ThreadPool::new(100);
+                let pending_txs = self.pending_txs.clone();
+                let sent_count = self.sent_count.clone();
+
+                pool.execute(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+
+                    rt.block_on(async {
+                        let res = rpc_client
+                            .send_tx_envelope(signed_tx.to_owned())
+                            .await
+                            .expect("failed to send tx envelope");
+
+                        let res_inner = res.into_inner();
+                        let tx_hash = res_inner.tx_hash();
+
+                        pending_txs.insert(*tx_hash, PendingRunTx {
+                            tx_hash: *tx_hash,
+                            start_timestamp: start_timestamp as usize,
+                            kind,
+                        });
+
+                        sent_count.fetch_add(1, Ordering::Relaxed);
+                        let _ = on_receipt.send(());
+                    });
                 });
-
-                self.sent_count += 1;
-
-                on_receipt.send(()).map_err(|_| {
-                    ContenderError::SpamError("failed to join TxActor callback", None)
-                })?;
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
@@ -267,13 +277,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    println!(
-                        "Statistics - Sent: {}, Confirmed: {}, Pending: {}, Total: {}",
-                        self.sent_count,
-                        self.confirmed_count,
-                        self.pending_txs.len(),
-                        self.expected_tx_count
-                    );
                     if !self.all_run_txs.is_empty() {
                         self.print_stats(&self.all_run_txs);
                     }
