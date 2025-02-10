@@ -76,6 +76,7 @@ impl From<BuiltinScenarioConfig> for TestConfig {
                             value: None,
                             fuzz: None,
                             kind: Some("fill-block".to_owned()),
+                            random_address: None,
                         })
                     })
                     .collect::<Vec<_>>();

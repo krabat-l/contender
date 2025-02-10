@@ -273,7 +273,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
                 }
 
-                let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
+                let _ = client_txs.into_iter().map(|(index, txs)| {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
@@ -294,10 +294,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
                     })
                 }).collect();
-
-                for task in tasks {
-                    let _ = task.await;
-                }
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
@@ -309,7 +305,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
                 _ = interval.tick() => {
