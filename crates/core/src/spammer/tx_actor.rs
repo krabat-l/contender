@@ -68,7 +68,6 @@ struct TxActor<D> where D: DbOps {
     confirmed_count: usize,
     sent_count: Arc<AtomicUsize>,
     all_run_txs: Vec<RunTx>,
-    pool: ThreadPool,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -96,7 +95,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             confirmed_count: 0,
             sent_count: Arc::new(AtomicUsize::new(0)),
             all_run_txs: Vec::new(),
-            pool: ThreadPool::new(256),
         }
     }
 
@@ -237,30 +235,26 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("time went backwards")
                     .as_millis();
-                let pending_txs = self.pending_txs.clone();
-                let sent_count = self.sent_count.clone();
+                let tx_hash = signed_tx.tx_hash();
+                self.pending_txs.insert(*tx_hash, PendingRunTx {
+                    tx_hash: *tx_hash,
+                    start_timestamp: start_timestamp as usize,
+                    kind,
+                });
 
-                self.pool.execute(move || {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
+                // Spawn a new task for sending the transaction
+                let rpc_client_clone = rpc_client.clone();
+                let signed_tx_clone = signed_tx.to_owned();
+                let sent_count_clone = self.sent_count.clone();
 
-                    rt.block_on(async {
-                        let res = rpc_client
-                            .send_tx_envelope(signed_tx.to_owned())
-                            .await
-                            .expect("failed to send tx envelope");
+                tokio::spawn(async move {
+                    let _ = rpc_client_clone
+                        .send_tx_envelope(signed_tx_clone)
+                        .await
+                        .expect("failed to send tx envelope");
 
-                        let res_inner = res.into_inner();
-                        let tx_hash = res_inner.tx_hash();
-
-                        pending_txs.insert(*tx_hash, PendingRunTx {
-                            tx_hash: *tx_hash,
-                            start_timestamp: start_timestamp as usize,
-                            kind,
-                        });
-
-                        sent_count.fetch_add(1, Ordering::Relaxed);
-                        let _ = on_receipt.send(());
-                    });
+                    sent_count_clone.fetch_add(1, Ordering::Relaxed);
+                    let _ = on_receipt.send(());
                 });
             }
             TxActorMessage::CheckConfirmedCount { response } => {

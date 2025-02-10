@@ -53,7 +53,7 @@ where
             let tx_requests = scenario
                 .load_txs(crate::generator::PlanType::Spam(
                     txs_per_period * num_periods,
-                    |_named_req| Ok(None), // we can look at the named request here if needed
+                    |_named_req| Ok(None),
                 ))
                 .await?;
             let tx_req_chunks = tx_requests.chunks(txs_per_period).collect::<Vec<&[_]>>();
@@ -63,30 +63,45 @@ where
                 .await
                 .map_err(|e| ContenderError::with_err(e, "failed to get block number"))?;
 
-            let mut tick = 0;
-            let mut cursor = self.on_spam(scenario).await?.take(num_periods);
+            let mut prepared_payloads = Vec::with_capacity(num_periods);
+            for chunk in &tx_req_chunks {
+                prepared_payloads.push(scenario.prepare_spam(chunk).await?);
+            }
 
-            while let Some(trigger) = cursor.next().await {
+            let mut tick = 0;
+            let mut cursor = self.on_spam(scenario).await?;
+
+            while tick < num_periods {
+                let start_time = std::time::Instant::now();
                 println!("[{}] start send txs, current datetime: {}", tick, chrono::Local::now().to_string());
+
                 if quit.load(std::sync::atomic::Ordering::Relaxed) {
                     println!("CTRL-C received, stopping spam and collecting results...");
                     quit.store(false, std::sync::atomic::Ordering::Relaxed);
                     break;
                 }
 
-                let trigger = trigger.to_owned();
-                let payloads = scenario.prepare_spam(tx_req_chunks[tick]).await?;
+                let trigger = cursor.next().await.unwrap().to_owned();
                 println!("[{}] mid send txs, current datetime: {}", tick, chrono::Local::now().to_string());
+
                 let spam_tasks = scenario
-                    .execute_spam(trigger, &payloads, sent_tx_callback.clone())
+                    .execute_spam(trigger, &prepared_payloads[tick], sent_tx_callback.clone())
                     .await?;
+
                 for task in spam_tasks {
                     let res = task.await;
                     if let Err(e) = res {
                         eprintln!("spam task failed: {:?}", e);
                     }
                 }
+
                 println!("[{}] end send txs, current datetime: {}", tick, chrono::Local::now().to_string());
+
+                let elapsed = start_time.elapsed();
+                if elapsed < std::time::Duration::from_secs(1) {
+                    tokio::time::sleep(std::time::Duration::from_secs(1) - elapsed).await;
+                }
+
                 tick += 1;
             }
 
