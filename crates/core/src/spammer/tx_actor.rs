@@ -1,7 +1,9 @@
 use std::error::Error;
+use std::io::Read;
 use std::sync::{Arc};
 use tokio::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime};
 use alloy::consensus::TxEnvelope;
 use alloy::network::AnyNetwork;
 use tokio::sync::{mpsc, oneshot};
@@ -12,6 +14,7 @@ use web3::{
 use serde::{Deserialize, Serialize};
 use alloy::primitives::{Address, TxHash};
 use alloy::providers::{Provider, ProviderBuilder};
+use alloy::signers::k256::U256;
 use url::Url;
 use crate::{
     db::{DbOps, RunTx},
@@ -23,7 +26,6 @@ use chrono::{DateTime};
 use futures::SinkExt;
 use futures::stream::SplitStream;
 use serde_json::Value;
-use threadpool::ThreadPool;
 use crate::generator::types::AnyProvider;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -32,50 +34,33 @@ pub struct TransactionSigned {
 }
 
 pub struct RpcClientPool {
-    address_clients: DashMap<Address, Arc<AddressClient>>,
-    base_clients: Vec<Arc<AnyProvider>>,
-    next_index: AtomicUsize,
+    clients: Vec<Arc<Mutex<AnyProvider>>>,
+    pool_size: usize,
 }
-
-struct AddressClient {
-    client: Arc<AnyProvider>,
-    last_used: Mutex<u64>,
-}
-
 impl RpcClientPool {
     pub fn new(rpc_url: Url, pool_size: usize) -> Self {
-        let base_clients: Vec<Arc<AnyProvider>> = (0..pool_size).map(|_| {
-            Arc::new(
-                ProviderBuilder::new()
-                    .network::<AnyNetwork>()
-                    .on_http(rpc_url.to_owned()),
-            )
-        }).collect();
+        let clients: Vec<Arc<Mutex<AnyProvider>>> = (0..pool_size)
+            .map(|_| {
+                Arc::new(Mutex::new(
+                    ProviderBuilder::new()
+                        .network::<AnyNetwork>()
+                        .on_http(rpc_url.to_owned())
+                ))
+            })
+            .collect();
 
         Self {
-            address_clients: DashMap::new(),
-            base_clients,
-            next_index: AtomicUsize::new(0),
+            clients,
+            pool_size,
         }
     }
-    pub async fn get_client_for_address(&self, address: Address) -> Arc<AnyProvider> {
-        // Try to get existing client for this address
-        if let Some(address_client) = self.address_clients.get(&address) {
-            let mut last_used = address_client.last_used.lock().await;
-            *last_used = chrono::Utc::now().timestamp_millis() as u64;
-            return address_client.client.clone();
-        }
 
-        // Create new client for this address
-        let index = self.next_index.fetch_add(1, Ordering::Relaxed) % self.base_clients.len();
-        let client = self.base_clients[index].clone();
-
-        self.address_clients.insert(address, Arc::new(AddressClient {
-            client: client.clone(),
-            last_used: Mutex::new(chrono::Utc::now().timestamp_millis() as u64),
-        }));
-
-        client
+    pub async fn get_client_for_address(&self, address: Address) -> Arc<Mutex<AnyProvider>> {
+        let addr_bytes = address.to_vec();
+        let last_four_bytes = &addr_bytes[16..20];
+        let num = u32::from_be_bytes(last_four_bytes.try_into().unwrap());
+        let index = num as usize % self.pool_size;
+        self.clients[index].clone()
     }
 }
 
@@ -295,16 +280,15 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 });
 
                 // Get client specific to this address
-                let client = self.client_pool.get_client_for_address(from).await;
-                let signed_tx_clone = signed_tx.to_owned();
+                let client_mutex = self.client_pool.get_client_for_address(from).await;
                 let sent_count_clone = self.sent_count.clone();
+                let signed_tx_clone = signed_tx.to_owned();
 
                 tokio::spawn(async move {
-                    let _ = client
+                    let client = client_mutex.lock().await;
+                    let result = client
                         .send_tx_envelope(signed_tx_clone)
-                        .await
-                        .expect("failed to send tx envelope");
-
+                        .await;
                     sent_count_clone.fetch_add(1, Ordering::Relaxed);
                 });
             }
