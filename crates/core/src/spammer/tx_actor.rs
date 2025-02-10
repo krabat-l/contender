@@ -17,7 +17,7 @@ use crate::{
 };
 use async_tungstenite::tokio::{connect_async, ConnectStream};
 use async_tungstenite::WebSocketStream;
-use chrono::{DateTime, Duration, NaiveDateTime};
+use chrono::{DateTime};
 use futures::SinkExt;
 use futures::stream::SplitStream;
 use serde_json::Value;
@@ -68,6 +68,7 @@ struct TxActor<D> where D: DbOps {
     confirmed_count: usize,
     sent_count: Arc<AtomicUsize>,
     all_run_txs: Vec<RunTx>,
+    pool: ThreadPool,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -95,6 +96,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             confirmed_count: 0,
             sent_count: Arc::new(AtomicUsize::new(0)),
             all_run_txs: Vec::new(),
+            pool: ThreadPool::new(256),
         }
     }
 
@@ -235,11 +237,10 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("time went backwards")
                     .as_millis();
-                let pool = ThreadPool::new(100);
                 let pending_txs = self.pending_txs.clone();
                 let sent_count = self.sent_count.clone();
 
-                pool.execute(move || {
+                self.pool.execute(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
 
                     rt.block_on(async {
