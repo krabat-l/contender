@@ -32,7 +32,7 @@ pub struct TransactionSigned {
 enum TxActorMessage {
     SentRunTx {
         kind: Option<String>,
-        on_receipt: oneshot::Sender<()>,
+        // on_receipt: oneshot::Sender<()>,
         signed_tx: TxEnvelope,
         rpc_client: Arc<AnyProvider>,
     },
@@ -227,7 +227,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         match message {
             TxActorMessage::SentRunTx {
                 kind,
-                on_receipt,
+                // on_receipt,
                 signed_tx,
                 rpc_client,
             } => {
@@ -254,7 +254,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         .expect("failed to send tx envelope");
 
                     sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                    let _ = on_receipt.send(());
+                    // let _ = on_receipt.send(());
                 });
             }
             TxActorMessage::CheckConfirmedCount { response } => {
@@ -319,16 +319,15 @@ impl TxActorHandle {
         signed_tx: TxEnvelope,
         rpc_client: Arc<AnyProvider>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (sender, receiver) = oneshot::channel();
+        // let (sender, receiver) = oneshot::channel();
         self.sender
             .send(TxActorMessage::SentRunTx {
                 kind,
-                on_receipt: sender,
                 signed_tx,
                 rpc_client,
             })
             .await?;
-        receiver.await?;
+        // receiver.await?;
         Ok(())
     }
 

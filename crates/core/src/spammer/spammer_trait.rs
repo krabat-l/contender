@@ -74,16 +74,6 @@ where
             while tick < num_periods {
                 let start_time = std::time::Instant::now();
                 println!("[{}] start send txs, current datetime: {}", tick, chrono::Local::now().to_string());
-
-                // if quit.load(std::sync::atomic::Ordering::Relaxed) {
-                //     println!("CTRL-C received, stopping spam and collecting results...");
-                //     quit.store(false, std::sync::atomic::Ordering::Relaxed);
-                //     break;
-                // }
-
-                // let trigger = cursor.next().await.unwrap().to_owned();
-                println!("[{}] mid send txs, current datetime: {}", tick, chrono::Local::now().to_string());
-
                 let spam_tasks = scenario
                     .execute_spam(&prepared_payloads[tick], sent_tx_callback.clone())
                     .await?;
