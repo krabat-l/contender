@@ -85,7 +85,7 @@ where
                 println!("[{}] mid send txs, current datetime: {}", tick, chrono::Local::now().to_string());
 
                 let spam_tasks = scenario
-                    .execute_spam(trigger, &prepared_payloads[tick], sent_tx_callback.clone())
+                    .execute_spam(&prepared_payloads[tick], sent_tx_callback.clone())
                     .await?;
 
                 for task in spam_tasks {
