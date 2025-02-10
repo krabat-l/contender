@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use alloy::consensus::TxEnvelope;
 use tokio::sync::{mpsc, oneshot};
 use dashmap::DashMap;
@@ -64,7 +65,7 @@ struct TxActor<D> where D: DbOps {
     run_id: Option<u64>,
     expected_tx_count: usize,
     confirmed_count: usize,
-    sent_count: usize,
+    sent_count: Arc<AtomicUsize>,
     all_run_txs: Vec<RunTx>,
 }
 
@@ -91,7 +92,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             run_id: Some(run_id),
             expected_tx_count,
             confirmed_count: 0,
-            sent_count: 0,
+            sent_count: Arc::new(AtomicUsize::new(0)),
             all_run_txs: Vec::new(),
         }
     }
@@ -226,24 +227,34 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("time went backwards")
                     .as_millis();
-                let res = rpc_client
-                    .send_tx_envelope(signed_tx.to_owned())
-                    .await
-                    .expect("failed to send tx envelope");
-                let res_inner = res.into_inner();
-                let tx_hash = res_inner.tx_hash();
-                // Store pending tx for future matching
-                self.pending_txs.insert(*tx_hash, PendingRunTx {
-                    tx_hash: *tx_hash,
-                    start_timestamp: start_timestamp as usize,
-                    kind,
+
+                let pending_txs = self.pending_txs.clone();
+                let sent_count = self.sent_count.clone();
+
+                tokio::spawn({
+                    let on_receipt = on_receipt;
+                    async move {
+                        let res = rpc_client
+                            .send_tx_envelope(signed_tx)
+                            .await
+                            .expect("failed to send tx envelope");
+
+                        let res_inner = res.into_inner();
+                        let tx_hash = res_inner.tx_hash();
+
+                        // Store pending tx for future matching
+                        pending_txs.insert(*tx_hash, PendingRunTx {
+                            tx_hash: *tx_hash,
+                            start_timestamp: start_timestamp as usize,
+                            kind,
+                        });
+
+                        sent_count.fetch_add(1, Ordering::Relaxed);
+
+                        on_receipt.send(()).expect("failed to send receipt");
+                    }
                 });
 
-                self.sent_count += 1;
-
-                on_receipt.send(()).map_err(|_| {
-                    ContenderError::SpamError("failed to join TxActor callback", None)
-                })?;
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
@@ -261,7 +272,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 _ = interval.tick() => {
                     println!(
                         "Statistics - Sent: {}, Confirmed: {}, Pending: {}, Total: {}",
-                        self.sent_count,
+                        self.sent_count.load(Ordering::Relaxed),
                         self.confirmed_count,
                         self.pending_txs.len(),
                         self.expected_tx_count
