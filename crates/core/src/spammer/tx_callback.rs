@@ -18,7 +18,6 @@ where
         req: &NamedTxRequest,
         extra: Option<HashMap<K, V>>,
         signed_tx: TxEnvelope,
-        rpc_client: Arc<AnyProvider>,
         tx_handler: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>>;
 }
@@ -41,7 +40,6 @@ impl OnTxSent for NilCallback {
         _req: &NamedTxRequest,
         _extra: Option<HashMap<String, String>>,
         _signed_tx: TxEnvelope,
-        _rpc_client: Arc<AnyProvider>,
         _tx_handler: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>> {
         // do nothing
@@ -55,7 +53,6 @@ impl OnTxSent for LogCallback {
         _req: &NamedTxRequest,
         extra: Option<HashMap<String, String>>,
         signed_tx: TxEnvelope,
-        rpc_client: Arc<AnyProvider>,
         tx_actor: Option<Arc<TxActorHandle>>,
     ) -> Option<JoinHandle<()>> {
         let kind = extra
@@ -64,7 +61,7 @@ impl OnTxSent for LogCallback {
         let handle = tokio::task::spawn(async move {
             if let Some(tx_actor) = tx_actor {
                 tx_actor
-                    .cache_run_tx(kind, signed_tx, rpc_client)
+                    .cache_run_tx(kind, signed_tx)
                     .await
                     .expect("failed to cache run tx");
             }

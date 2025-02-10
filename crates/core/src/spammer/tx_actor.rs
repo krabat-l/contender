@@ -2,6 +2,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use alloy::consensus::TxEnvelope;
+use alloy::network::AnyNetwork;
 use tokio::sync::{mpsc, oneshot};
 use dashmap::DashMap;
 use web3::{
@@ -9,7 +10,7 @@ use web3::{
 };
 use serde::{Deserialize, Serialize};
 use alloy::primitives::TxHash;
-use alloy::providers::Provider;
+use alloy::providers::{Provider, ProviderBuilder};
 use url::Url;
 use crate::{
     db::{DbOps, RunTx},
@@ -29,12 +30,39 @@ pub struct TransactionSigned {
     pub hash: TxHash,
 }
 
+pub struct RpcClientPool {
+    clients: Vec<Arc<AnyProvider>>,
+    next_index: AtomicUsize,
+}
+
+impl RpcClientPool {
+    pub fn new(rpc_url: Url, pool_size: usize) -> Self {
+        let clients: Vec<Arc<AnyProvider>> = (0..pool_size).map(|_| {
+            Arc::new(
+                ProviderBuilder::new()
+                    .network::<AnyNetwork>()
+                    .on_http(rpc_url.to_owned()),
+            )
+        }).collect();
+
+        Self {
+            clients,
+            next_index: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn get_client(&self) -> Arc<AnyProvider> {
+        let index = self.next_index.fetch_add(1, Ordering::Relaxed) % self.clients.len();
+        self.clients[index].clone()
+    }
+}
+
 enum TxActorMessage {
     SentRunTx {
         kind: Option<String>,
         // on_receipt: oneshot::Sender<()>,
         signed_tx: TxEnvelope,
-        rpc_client: Arc<AnyProvider>,
+        // rpc_client: Arc<AnyProvider>,
     },
     CheckConfirmedCount {
         response: oneshot::Sender<usize>,
@@ -68,12 +96,14 @@ struct TxActor<D> where D: DbOps {
     confirmed_count: usize,
     sent_count: Arc<AtomicUsize>,
     all_run_txs: Vec<RunTx>,
+    client_pool: Arc<RpcClientPool>,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     pub async fn new(
         receiver: mpsc::Receiver<TxActorMessage>,
         db: Arc<D>,
+        rpc_url: Url,
         ws_url: Url,
         run_id: u64,
         expected_tx_count: usize,
@@ -84,7 +114,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-
+        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 10));
         Self {
             receiver,
             db,
@@ -95,6 +125,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             confirmed_count: 0,
             sent_count: Arc::new(AtomicUsize::new(0)),
             all_run_txs: Vec::new(),
+            client_pool,
         }
     }
 
@@ -229,7 +260,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 kind,
                 // on_receipt,
                 signed_tx,
-                rpc_client,
+                // rpc_client,
             } => {
                 let start_timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -242,19 +273,17 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     kind,
                 });
 
-                // Spawn a new task for sending the transaction
-                let rpc_client_clone = rpc_client.clone();
+                let client = self.client_pool.get_client();
                 let signed_tx_clone = signed_tx.to_owned();
                 let sent_count_clone = self.sent_count.clone();
 
                 tokio::spawn(async move {
-                    let _ = rpc_client_clone
+                    let _ = client
                         .send_tx_envelope(signed_tx_clone)
                         .await
                         .expect("failed to send tx envelope");
 
                     sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                    // let _ = on_receipt.send(());
                 });
             }
             TxActorMessage::CheckConfirmedCount { response } => {
@@ -301,12 +330,13 @@ impl TxActorHandle {
     pub async fn new<D: DbOps + Send + Sync + 'static>(
         bufsize: usize,
         db: Arc<D>,
+        rpc_url: Url,
         ws_url: Url,
         run_id: u64,
         expected_tx_count: usize,
     ) -> Result<Self, Box<dyn Error>> {
         let (sender, receiver) = mpsc::channel(bufsize);
-        let mut actor = TxActor::new(receiver, db, ws_url, run_id, expected_tx_count).await;
+        let mut actor = TxActor::new(receiver, db, rpc_url, ws_url, run_id, expected_tx_count).await;
         tokio::task::spawn(async move {
             actor.run().await.expect("tx actor crashed");
         });
@@ -317,14 +347,14 @@ impl TxActorHandle {
         &self,
         kind: Option<String>,
         signed_tx: TxEnvelope,
-        rpc_client: Arc<AnyProvider>,
+        // rpc_client: Arc<AnyProvider>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // let (sender, receiver) = oneshot::channel();
         self.sender
             .send(TxActorMessage::SentRunTx {
                 kind,
                 signed_tx,
-                rpc_client,
+                // rpc_client,
             })
             .await?;
         // receiver.await?;

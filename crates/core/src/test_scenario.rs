@@ -35,7 +35,6 @@ where
     pub db: Arc<D>,
     pub rpc_url: Url,
     pub rpc_client: Arc<AnyProvider>,
-    pub rpc_clients: Arc<Vec<Arc<AnyProvider>>>,
     pub eth_client: Arc<EthProvider>,
     pub bundle_client: Option<Arc<BundleClient>>,
     pub builder_rpc_url: Option<Url>,
@@ -73,13 +72,6 @@ where
                 .network::<AnyNetwork>()
                 .on_http(rpc_url.to_owned()),
         );
-        let rpc_clients: Arc<Vec<Arc<AnyProvider>>> = Arc::new((0..20).map(|_| {
-            Arc::new(
-                ProviderBuilder::new()
-                    .network::<AnyNetwork>()
-                    .on_http(rpc_url.to_owned()),
-            )
-        }).collect());
         let mut wallet_map = HashMap::new();
         let wallets = signers.iter().map(|s| {
             let w = EthereumWallet::new(s.clone());
@@ -95,7 +87,7 @@ where
             }
         }
 
-        let chain_id = rpc_clients[0]
+        let chain_id = rpc_client
             .get_chain_id()
             .await
             .map_err(|e| ContenderError::with_err(e, "failed to get chain id"))?;
@@ -103,7 +95,7 @@ where
         let mut nonces = HashMap::new();
         let all_addrs = wallet_map.keys().copied().collect::<Vec<Address>>();
         for addr in &all_addrs {
-            let nonce = rpc_clients[0]
+            let nonce = rpc_client
                 .get_transaction_count(*addr)
                 .await
                 .map_err(|e| ContenderError::with_err(e, "failed to retrieve nonce from RPC"))?;
@@ -115,7 +107,7 @@ where
             .as_ref()
             .map(|url| Arc::new(BundleClient::new(url.clone())));
 
-        let msg_handle = Arc::new(TxActorHandle::new(12, db.clone(), ws_url, run_id, expected_tx_count)
+        let msg_handle = Arc::new(TxActorHandle::new(12, db.clone(), rpc_url.to_owned(), ws_url, run_id, expected_tx_count)
             .await
             .map_err(|e| ContenderError::SetupError("failed to start tx actor", None))?);
         Ok(Self {
@@ -123,7 +115,6 @@ where
             db: db.clone(),
             rpc_url: rpc_url.to_owned(),
             rpc_client,
-            rpc_clients,
             eth_client: Arc::new(ProviderBuilder::new().on_http(rpc_url)),
             bundle_client,
             builder_rpc_url,
@@ -487,8 +478,6 @@ where
         let mut tasks: Vec<tokio::task::JoinHandle<()>> = vec![];
 
         for payload in payloads {
-            let rpc_client = Arc::clone(&self.rpc_clients[rand::random::<usize>() % self.rpc_clients.len()]);
-            let bundle_client = self.bundle_client.clone();
             let callback_handler = callback_handler.clone();
             let tx_handler = self.msg_handle.clone();
 
@@ -505,7 +494,6 @@ where
                             &req,
                             Some(extra),
                             signed_tx.to_owned(),
-                            rpc_client,
                             Some(tx_handler.clone()),
                         );
                         vec![maybe_handle]
