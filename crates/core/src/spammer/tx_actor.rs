@@ -2,7 +2,6 @@ use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use alloy::consensus::TxEnvelope;
-use alloy::eips::eip2718::Encodable2718;
 use tokio::sync::{mpsc, oneshot};
 use dashmap::DashMap;
 use web3::{
@@ -10,6 +9,7 @@ use web3::{
 };
 use serde::{Deserialize, Serialize};
 use alloy::primitives::TxHash;
+use alloy::providers::Provider;
 use url::Url;
 use crate::{
     db::{DbOps, RunTx},
@@ -20,9 +20,8 @@ use async_tungstenite::WebSocketStream;
 use chrono::{DateTime, Duration, NaiveDateTime};
 use futures::SinkExt;
 use futures::stream::SplitStream;
-use serde_json::{json, Value};
+use serde_json::Value;
 use crate::generator::types::AnyProvider;
-use reqwest::Client;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct TransactionSigned {
@@ -58,20 +57,6 @@ impl PendingRunTx {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct BatchRequest {
-    jsonrpc: String,
-    method: String,
-    params: Vec<String>,
-    id: usize,
-}
-
-#[derive(Debug)]
-struct BatchTxGroup {
-    txs: Vec<(TxEnvelope, Option<String>, oneshot::Sender<()>)>,
-    timestamp: usize,
-}
-
 struct TxActor<D> where D: DbOps {
     receiver: mpsc::Receiver<TxActorMessage>,
     db: Arc<D>,
@@ -82,10 +67,6 @@ struct TxActor<D> where D: DbOps {
     confirmed_count: usize,
     sent_count: Arc<AtomicUsize>,
     all_run_txs: Vec<RunTx>,
-    http_client: Client,
-    rpc_url: String,
-    batch_size: usize,
-    current_batch: BatchTxGroup,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -93,10 +74,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         receiver: mpsc::Receiver<TxActorMessage>,
         db: Arc<D>,
         ws_url: Url,
-        http_url: String,
         run_id: u64,
         expected_tx_count: usize,
-        batch_size: usize,
     ) -> Self {
         let (ws_stream, _) = connect_async(ws_url).await.expect("failed to connect to WS server");
         let (mut write, read) = ws_stream.split();
@@ -113,15 +92,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             run_id: Some(run_id),
             expected_tx_count,
             confirmed_count: 0,
-            sent_count: Arc::new(AtomicUsize::new(0)),
+            sent_count: 0,
             all_run_txs: Vec::new(),
-            http_client: Client::new(),
-            rpc_url: http_url,
-            batch_size,
-            current_batch: BatchTxGroup {
-                txs: Vec::with_capacity(batch_size),
-                timestamp: 0,
-            },
         }
     }
 
@@ -180,60 +152,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         println!("Max Latency: {} ms", max);
         println!("Throughput: {:.2} tx/s", throughput);
         println!("--------------------------------\n");
-    }
-
-    async fn send_batch(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.current_batch.txs.is_empty() {
-            return Ok(());
-        }
-
-        let mut requests = Vec::with_capacity(self.current_batch.txs.len());
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_millis() as usize;
-
-        for (idx, (tx, _, _)) in self.current_batch.txs.iter().enumerate() {
-            let mut encoded_tx = vec![];
-            tx.encode_2718(&mut encoded_tx);
-            let rlp_hex = alloy::hex::encode_prefixed(encoded_tx);
-
-            let params = vec![
-                rlp_hex,
-            ];
-
-            requests.push(BatchRequest {
-                jsonrpc: "2.0".to_string(),
-                method: "eth_sendRawTransaction".to_string(),
-                params,
-                id: idx,
-            });
-        }
-
-        let response = self.http_client
-            .post(&self.rpc_url)
-            .json(&requests)
-            .send()
-            .await?;
-
-        let results: Vec<serde_json::Value> = response.json().await?;
-
-        for (result, (_, kind, receipt_sender)) in results.into_iter().zip(self.current_batch.txs.drain(..)) {
-            if let Some(hash_str) = result["result"].as_str() {
-                let hash_str = hash_str.strip_prefix("0x").unwrap_or(hash_str);
-                if let Ok(bytes) = hex::decode(hash_str) {
-                    let tx_hash = TxHash::from_slice(&bytes);
-                    self.pending_txs.insert(tx_hash, PendingRunTx::new(
-                        tx_hash,
-                        timestamp,
-                        kind.as_ref().map(String::as_str),
-                    ));
-                    self.sent_count.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            let _ = receipt_sender.send(());
-        }
-        Ok(())
     }
 
     async fn process_ws_message(&mut self, text: String) -> Result<bool, Box<dyn Error>> {
@@ -312,10 +230,28 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 signed_tx,
                 rpc_client,
             } => {
-                self.current_batch.txs.push((signed_tx, kind, on_receipt));
-                if self.current_batch.txs.len() >= self.batch_size {
-                    self.send_batch().await?;
-                }
+                let start_timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("time went backwards")
+                    .as_millis();
+                let res = rpc_client
+                    .send_tx_envelope(signed_tx.to_owned())
+                    .await
+                    .expect("failed to send tx envelope");
+                let res_inner = res.into_inner();
+                let tx_hash = res_inner.tx_hash();
+                // Store pending tx for future matching
+                self.pending_txs.insert(*tx_hash, PendingRunTx {
+                    tx_hash: *tx_hash,
+                    start_timestamp: start_timestamp as usize,
+                    kind,
+                });
+
+                self.sent_count += 1;
+
+                on_receipt.send(()).map_err(|_| {
+                    ContenderError::SpamError("failed to join TxActor callback", None)
+                })?;
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
@@ -328,17 +264,18 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-        let mut batch_interval = tokio::time::interval(std::time::Duration::from_millis(100));
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    println!(
+                        "Statistics - Sent: {}, Confirmed: {}, Pending: {}, Total: {}",
+                        self.sent_count,
+                        self.confirmed_count,
+                        self.pending_txs.len(),
+                        self.expected_tx_count
+                    );
                     if !self.all_run_txs.is_empty() {
                         self.print_stats(&self.all_run_txs);
-                    }
-                }
-                _ = batch_interval.tick() => {
-                    if !self.current_batch.txs.is_empty() {
-                        self.send_batch().await?;
                     }
                 }
                 Some(msg) = self.receiver.recv() => {
@@ -363,31 +300,19 @@ pub struct TxActorHandle {
     sender: mpsc::Sender<TxActorMessage>,
 }
 
-
 impl TxActorHandle {
     pub async fn new<D: DbOps + Send + Sync + 'static>(
         bufsize: usize,
         db: Arc<D>,
         ws_url: Url,
-        http_url: String,
         run_id: u64,
         expected_tx_count: usize,
     ) -> Result<Self, Box<dyn Error>> {
         let (sender, receiver) = mpsc::channel(bufsize);
-        let mut actor = TxActor::new(
-            receiver,
-            db,
-            ws_url,
-            http_url,
-            run_id,
-            expected_tx_count,
-            100,
-        ).await;
-
+        let mut actor = TxActor::new(receiver, db, ws_url, run_id, expected_tx_count).await;
         tokio::task::spawn(async move {
             actor.run().await.expect("tx actor crashed");
         });
-
         Ok(Self { sender })
     }
 
