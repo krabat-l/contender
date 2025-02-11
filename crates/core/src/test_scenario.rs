@@ -405,7 +405,6 @@ where
                             None,
                         ));
                     }
-
                     // prepare each tx in the bundle (increment nonce, set gas price, etc)
                     let mut bundle_txs = vec![];
 
