@@ -163,12 +163,12 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     }
 
 
-    fn calculate_latency_stats(run_txs: &[RunTx]) -> (usize, usize, usize, usize, usize, f64) {
-        if run_txs.is_empty() {
+    fn calculate_latency_stats(&self) -> (usize, usize, usize, usize, usize, f64) {
+        if self.all_run_txs.is_empty() {
             return (0, 0, 0, 0, 0, 0.0);
         }
 
-        let mut latencies: Vec<usize> = run_txs.iter()
+        let mut latencies: Vec<usize> = self.all_run_txs.iter()
             .map(|tx| tx.end_timestamp - tx.start_timestamp)
             .collect();
 
@@ -182,8 +182,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         let p99 = latencies[p99_idx];
         let max = latencies[total_txs - 1];
 
-        let first_tx = run_txs.iter().min_by_key(|tx| tx.start_timestamp).unwrap();
-        let last_tx = run_txs.iter().max_by_key(|tx| tx.end_timestamp).unwrap();
+        let first_tx = self.all_run_txs.iter().min_by_key(|tx| tx.start_timestamp).unwrap();
+        let last_tx = self.all_run_txs.iter().max_by_key(|tx| tx.end_timestamp).unwrap();
         let total_time = (last_tx.end_timestamp - first_tx.start_timestamp) as f64;
         let throughput = if total_time > 0.0 {
             total_txs as f64 / total_time
@@ -194,13 +194,13 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         (first_tx.start_timestamp, last_tx.end_timestamp, p50, p99, max, throughput * 1000.0)
     }
 
-    fn print_stats(&mut self, run_txs: &[RunTx]) {
+    fn print_stats(&mut self) {
         let current_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards")
             .as_millis() as usize;
 
-        let (start, end, p50, p99, max, throughput) = Self::calculate_latency_stats(run_txs);
+        let (start, end, p50, p99, max, throughput) = self.calculate_latency_stats();
         let realtime_tps = self.calculate_realtime_tps(current_timestamp);
 
         let start_time = DateTime::from_timestamp_millis(start as i64);
@@ -282,7 +282,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
 
                                 if self.confirmed_count >= self.expected_tx_count {
                                     println!("Reached expected transaction count: {}", self.expected_tx_count);
-                                    self.print_stats(&self.all_run_txs);
+                                    self.print_stats();
                                     return Ok(true);
                                 }
                             }
@@ -349,7 +349,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             tokio::select! {
                 _ = interval.tick() => {
                     if !self.all_run_txs.is_empty() {
-                        self.print_stats(&self.all_run_txs);
+                        self.print_stats();
                     }
                 }
                 Some(msg) = self.receiver.recv() => {
