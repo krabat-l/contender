@@ -4,7 +4,7 @@ use std::io::Read;
 use std::sync::{Arc};
 use tokio::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use alloy::consensus::TxEnvelope;
 use alloy::network::AnyNetwork;
 use tokio::sync::{mpsc, oneshot};
@@ -99,6 +99,7 @@ struct TxActor<D> where D: DbOps {
     sent_count: Arc<AtomicUsize>,
     all_run_txs: Vec<RunTx>,
     client_pool: Arc<RpcClientPool>,
+    recent_confirmations: Vec<(usize, usize)>,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -128,6 +129,36 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             sent_count: Arc::new(AtomicUsize::new(0)),
             all_run_txs: Vec::new(),
             client_pool,
+            recent_confirmations: Vec::new(),
+        }
+    }
+
+    fn calculate_realtime_tps(&mut self, current_timestamp: usize) -> f64 {
+        // Remove confirmations older than 15 seconds
+        let window_start = current_timestamp.saturating_sub(15000); // 15 seconds in milliseconds
+        self.recent_confirmations.retain(|(ts, _)| *ts >= window_start);
+
+        // Calculate total confirmations in the window
+        let total_confirmations: usize = self.recent_confirmations.iter()
+            .map(|(_, count)| count)
+            .sum();
+
+        // Calculate actual window duration (might be less than 15s at the start)
+        let window_duration = if self.recent_confirmations.is_empty() {
+            15.0 // default to 15s if no data
+        } else {
+            let oldest_ts = self.recent_confirmations.first()
+                .map(|(ts, _)| *ts)
+                .unwrap_or(current_timestamp);
+            let duration_ms = (current_timestamp - oldest_ts) as f64;
+            duration_ms / 1000.0 // convert to seconds
+        };
+
+        // Calculate TPS
+        if window_duration > 0.0 {
+            total_confirmations as f64 / window_duration
+        } else {
+            0.0
         }
     }
 
@@ -163,8 +194,14 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         (first_tx.start_timestamp, last_tx.end_timestamp, p50, p99, max, throughput * 1000.0)
     }
 
-    fn print_stats(&self, run_txs: &[RunTx]) {
+    fn print_stats(&mut self, run_txs: &[RunTx]) {
+        let current_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis() as usize;
+
         let (start, end, p50, p99, max, throughput) = Self::calculate_latency_stats(run_txs);
+        let realtime_tps = self.calculate_realtime_tps(current_timestamp);
 
         let start_time = DateTime::from_timestamp_millis(start as i64);
         let end_time = DateTime::from_timestamp_millis(end as i64);
@@ -187,7 +224,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         println!("P50 Latency: {} ms", p50);
         println!("P99 Latency: {} ms", p99);
         println!("Max Latency: {} ms", max);
-        println!("Throughput: {:.2} tx/s", throughput);
+        println!("Overall Throughput: {:.2} tx/s", throughput);
+        println!("Realtime TPS (15s): {:.2} tx/s", realtime_tps);
         println!("--------------------------------\n");
     }
 
@@ -230,6 +268,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
 
                         if !new_confirmed_txs.is_empty() {
+                            self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
                             println!("confirmed {}/{} txs at fragment {}, block {}, current block tx count: {}, remaining: {}/{}",
                                      new_confirmed_txs.len(), transactions.len(), fragment_index,
                                      block_number, tx_offset as usize + transactions.len(),
