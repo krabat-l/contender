@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::io::Read;
+use std::fs::OpenOptions;
 use std::sync::{Arc};
-use tokio::sync::Mutex;
+use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use alloy::consensus::TxEnvelope;
@@ -23,7 +23,7 @@ use crate::{
 };
 use async_tungstenite::tokio::{connect_async, ConnectStream};
 use async_tungstenite::WebSocketStream;
-use chrono::{DateTime};
+use chrono::{DateTime, Utc};
 use futures::SinkExt;
 use futures::stream::SplitStream;
 use serde_json::Value;
@@ -100,6 +100,8 @@ struct TxActor<D> where D: DbOps {
     all_run_txs: Vec<RunTx>,
     client_pool: Arc<RpcClientPool>,
     recent_confirmations: Vec<(usize, usize)>,
+    current_second_tx_count: usize,
+    tps_file: String,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -118,6 +120,16 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             .await
             .expect("failed to send subscribe message");
         let client_pool = Arc::new(RpcClientPool::new(rpc_url, 50));
+        let now = Utc::now();
+        let tps_file = format!("tps_data_{}.csv", now.format("%Y%m%d_%H%M%S"));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tps_file)
+            .expect("Failed to create TPS file");
+        writeln!(file, "timestamp,tps").expect("Failed to write headers");
+
         Self {
             receiver,
             db,
@@ -130,12 +142,24 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             all_run_txs: Vec::new(),
             client_pool,
             recent_confirmations: Vec::new(),
+            current_second_tx_count: 0,
+            tps_file,
+        }
+    }
+
+    fn write_tps_to_file(&mut self, timestamp: i64, tps: usize) {
+        if let Ok(mut file) = OpenOptions::new()
+            .append(true)
+            .open(&self.tps_file)
+        {
+            writeln!(file, "{},{}", timestamp, tps)
+                .expect("Failed to write TPS data");
         }
     }
 
     fn calculate_realtime_tps(&mut self, current_timestamp: usize) -> f64 {
         // Remove confirmations older than 15 seconds
-        let window_start = current_timestamp.saturating_sub(15000); // 15 seconds in milliseconds
+        let window_start = current_timestamp.saturating_sub(1000); // 15 seconds in milliseconds
         self.recent_confirmations.retain(|(ts, _)| *ts >= window_start);
 
         // Calculate total confirmations in the window
@@ -145,7 +169,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
 
         // Calculate actual window duration (might be less than 15s at the start)
         let window_duration = if self.recent_confirmations.is_empty() {
-            15.0 // default to 15s if no data
+            1.0 // default to 15s if no data
         } else {
             let oldest_ts = self.recent_confirmations.first()
                 .map(|(ts, _)| *ts)
@@ -268,6 +292,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
 
                         if !new_confirmed_txs.is_empty() {
+                            self.current_second_tx_count += new_confirmed_txs.len();
                             self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
                             println!("confirmed {}/{} txs at fragment {}, block {}, current block tx count: {}, remaining: {}/{}",
                                      new_confirmed_txs.len(), transactions.len(), fragment_index,
@@ -348,6 +373,12 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    let current_timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs() as i64;
+                    self.write_tps_to_file(current_timestamp, self.current_second_tx_count);
+                    self.current_second_tx_count = 0;
                     if !self.all_run_txs.is_empty() {
                         self.print_stats();
                     }
