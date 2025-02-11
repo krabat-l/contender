@@ -122,6 +122,7 @@ pub async fn spam(
     //     panic!("Must set either --txs-per-block (--tpb) or --txs-per-second (--tps)");
     // }
 
+    println!("funding accounts...");
     fund_accounts(
         &all_signer_addrs,
         &user_signers[0],
@@ -138,6 +139,7 @@ pub async fn spam(
         .as_millis();
     let run_id =
         db.insert_run(timestamp as u64, expected_tx_count, &args.testfile)?;
+    println!("creating test scenario...");
     let mut scenario = TestScenario::new(
         testconfig,
         db.clone().into(),
@@ -152,6 +154,7 @@ pub async fn spam(
         expected_tx_count,
     )
     .await?;
+    println!("calculate spam cost...");
     let total_cost =
         get_max_spam_cost(scenario.to_owned(), &rpc_client).await? * U256::from(duration);
     if min_balance < U256::from(total_cost) {
