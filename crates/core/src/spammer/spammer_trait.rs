@@ -67,21 +67,12 @@ where
 
             println!("preparing spam txs...");
             let mut prepared_payloads = Vec::with_capacity(num_periods);
-
-            let chunk_size = 4;
-            for chunks in tx_req_chunks.chunks(chunk_size) {
-                let mut futures = Vec::with_capacity(chunks.len());
-                for chunk in chunks {
-                    futures.push(scenario.prepare_spam(chunk));
-                }
-
-                let results = futures::future::join_all(futures).await;
-                for result in results {
-                    prepared_payloads.push(result?);
-                }
+            for chunk in &tx_req_chunks {
+                prepared_payloads.push(scenario.prepare_spam(chunk).await?);
             }
 
             let mut tick = 0;
+            // let mut cursor = self.on_spam(scenario).await?;
 
             println!("executing spam txs...");
             while tick < num_periods {
