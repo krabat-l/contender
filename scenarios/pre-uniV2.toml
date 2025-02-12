@@ -40,6 +40,37 @@ bytecode = "0x6080604052348015600f57600080fd5b506109618061001f6000396000f3fe6080
 
 ### setup contracts
 
+[[setup]]
+kind = "admin_approve_weth"
+to = "{weth}"
+from_pool = "admin"
+signature = "approve(address spender, uint256 amount) returns (bool)"
+args = [
+     "{tokenHub}",
+     "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+]
+
+[[setup]]
+kind = "admin_approve_testToken"
+to = "{testToken}"
+from_pool = "admin"
+signature = "approve(address spender, uint256 amount) returns (bool)"
+args = [
+     "{tokenHub}",
+     "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+]
+
+
+[[setup]]
+kind = "admin_approve_testToken2"
+to = "{testToken2}"
+from_pool = "admin"
+signature = "approve(address spender, uint256 amount) returns (bool)"
+args = [
+     "{tokenHub}",
+     "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+]
+
 ## weth deposits ###############################################################
 
 [[setup]]
@@ -211,6 +242,9 @@ args = [
      "{weth}",
      "500000000000"
 ]
+
+[[spam]]
+
 [spam.tx]
 kind = "uniswap_v2_swap_weth-testToken"
 to = "{tokenHub}"
@@ -220,6 +254,8 @@ args = [
      "{testToken}",
      "500000000000"
 ]
+
+[[spam]]
 
 [spam.tx]
 kind = "uniswap_v2_swap_weth-testToken"
