@@ -18,7 +18,7 @@ bytecode = "0x608060405234801561001057600080fd5b50604051611688380380611688833981
 kind = "token_transfer_spam"
 to = "{testToken}"
 from_pool = "admin"
-signature = "function transfer(address to, uint256 value) public virtual returns (bool)"
+signature = "function transfer(address to, uint256 value) public returns (bool)"
 args = [
      "0x1234567890123456789012345678901234567890",  # Recipient address
      "1000000000000000"
