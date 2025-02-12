@@ -64,8 +64,6 @@ pub enum SpamRequest {
     Tx(FunctionCallDefinition),
     #[serde(rename = "bundle")]
     Bundle(BundleCallDefinition),
-    #[serde(rename = "prepare")]
-    Prepare(FunctionCallDefinition),
 }
 
 #[derive(Clone, Deserialize, Debug, Serialize)]

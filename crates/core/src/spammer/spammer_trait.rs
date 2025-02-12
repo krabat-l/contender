@@ -52,23 +52,20 @@ where
         async move {
             println!("start spamming...");
             println!("loading tx requests...");
-            let all_requests = scenario
+            let tx_requests = scenario
                 .load_txs(crate::generator::PlanType::Spam(
                     txs_per_period * num_periods,
                     |_named_req| Ok(None),
                 ))
                 .await?;
-            let prepare_txs = all_requests.prepare_txs;
-            let tx_requests = all_requests.spam_txs;
             let tx_req_chunks = tx_requests.chunks(txs_per_period).collect::<Vec<&[_]>>();
-            // let block_num = scenario
-            //     .rpc_client
-            //     .get_block_number()
-            //     .await
-            //     .map_err(|e| ContenderError::with_err(e, "failed to get block number"))?;
+            let block_num = scenario
+                .rpc_client
+                .get_block_number()
+                .await
+                .map_err(|e| ContenderError::with_err(e, "failed to get block number"))?;
 
             println!("preparing spam txs...");
-            let pre_prepared_payload = scenario.prepare_spam(&*prepare_txs).await?;
             let mut prepared_payloads = Vec::with_capacity(num_periods);
             for chunk in &tx_req_chunks {
                 prepared_payloads.push(scenario.prepare_spam(chunk).await?);
@@ -76,18 +73,6 @@ where
 
             let mut tick = 0;
             // let mut cursor = self.on_spam(scenario).await?;
-
-            println!("executing prepare txs...");
-            let pre_spam_tasks = scenario
-                .execute_spam(&pre_prepared_payload, sent_tx_callback.clone())
-                .await?;
-
-            for task in pre_spam_tasks {
-                let res = task.await;
-                if let Err(e) = res {
-                    eprintln!("spam task failed: {:?}", e);
-                }
-            }
 
             println!("executing spam txs...");
             while tick < num_periods {

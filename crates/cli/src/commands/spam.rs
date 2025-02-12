@@ -17,7 +17,6 @@ use contender_core::{
     spammer::{ExecutionPayload, Spammer, TimedSpammer},
     test_scenario::TestScenario,
 };
-use contender_core::generator::SpamTxGroup;
 use contender_testfile::TestConfig;
 
 use crate::util::{
@@ -242,22 +241,25 @@ async fn get_max_spam_cost<D: DbOps + Send + Sync + 'static, S: Seeder + Send + 
     rpc_client: &AnyProvider,
 ) -> Result<U256, Box<dyn std::error::Error>> {
     let mut scenario = scenario;
-    let spam_tx_group = scenario
-        .load_txs(PlanType::Spam(
-            scenario
-                .config
-                .spam
-                .to_owned()
-                .map(|s| s.len())
-                .unwrap_or(0),
-            |_named_req| {
-                Ok(None)
-            },
-        ))
-        .await?;
 
+    // load a sample of each spam tx from the scenario
     let sample_txs = scenario
-        .prepare_spam(&spam_tx_group.prepare_txs)
+        .prepare_spam(
+            &scenario
+                .load_txs(PlanType::Spam(
+                    scenario
+                        .config
+                        .spam
+                        .to_owned()
+                        .map(|s| s.len()) // take the number of spam txs from the testfile
+                        .unwrap_or(0),
+                    |_named_req| {
+                        // we can look at the named request here if needed
+                        Ok(None)
+                    },
+                ))
+                .await?,
+        )
         .await?
         .iter()
         .map(|ex_payload| match ex_payload {
