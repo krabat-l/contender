@@ -74,6 +74,7 @@ pub fn get_spam_pools(testconfig: &TestConfig) -> Vec<String> {
                     }
                 }
             }
+            _ => {}
         }
     }
 
@@ -124,6 +125,9 @@ pub fn check_private_keys(testconfig: &TestConfig, prv_keys: &[PrivateKeySigner]
             }
             SpamRequest::Bundle(bundle) => {
                 fn_calls.extend(bundle.txs.iter().map(|s| s.to_owned()));
+            }
+            SpamRequest::Prepare(pre_call) => {
+                fn_calls.push(pre_call.to_owned());
             }
         }
     }

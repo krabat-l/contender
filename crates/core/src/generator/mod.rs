@@ -90,6 +90,17 @@ fn parse_map_key(fuzz: FuzzParam) -> Result<String> {
     Ok(key)
 }
 
+#[derive(Debug)]
+pub enum SpamStepKind {
+    Prepare,
+    Tx,
+}
+
+pub struct SpamTxGroup {
+    pub prepare_txs: Vec<ExecutionRequest>,
+    pub spam_txs: Vec<ExecutionRequest>,
+}
+
 #[async_trait]
 pub trait Generator<K, D, T>
 where
@@ -175,6 +186,8 @@ where
         idx: usize,
     ) -> Result<FunctionCallDefinitionStrict> {
         let agents = self.get_agent_store();
+
+        // Handle from_address
         let from_address: Address = if let Some(from_pool) = &funcdef.from_pool {
             let agent = agents
                 .get_agent(from_pool)
@@ -200,17 +213,38 @@ where
             ));
         };
 
-        // manually replace {_sender} with the 'from' address
+        // Get args and process them
         let args = funcdef.args.to_owned().unwrap_or_default();
         let args = args
             .iter()
             .map(|arg| {
-                if arg.contains("{_sender}") {
-                    // return `from` address WITH 0x prefix
-                    arg.replace("{_sender}", &from_address.to_string())
-                } else {
-                    arg.to_owned()
+                let mut processed_arg = arg.to_owned();
+
+                // Replace {_sender} with from_address
+                if processed_arg.contains("{_sender}") {
+                    processed_arg = processed_arg.replace("{_sender}", &from_address.to_string());
                 }
+
+                // Replace {_spammers} with address from the same pool as from_address
+                if processed_arg.contains("{_spammers}") {
+                    if let Some(from_pool) = &funcdef.from_pool {
+                        let agent = agents
+                            .get_agent(from_pool)
+                            .ok_or(ContenderError::SpamError(
+                                "_spammers pool not found in agent store",
+                                Some(from_pool.to_owned()),
+                            ))
+                            .unwrap();
+                        if let Some(spammer_address) = agent.get_address(idx) {
+                            processed_arg = processed_arg.replace("{_spammers}", &spammer_address.to_string());
+                        }
+                    } else {
+                        // If no from_pool specified, use the from_address
+                        processed_arg = processed_arg.replace("{_spammers}", &from_address.to_string());
+                    }
+                }
+
+                processed_arg
             })
             .collect::<Vec<String>>();
 
@@ -234,7 +268,7 @@ where
     async fn load_txs<F: Send + Sync + Fn(NamedTxRequest) -> CallbackResult>(
         &self,
         plan_type: PlanType<F>,
-    ) -> Result<Vec<ExecutionRequest>> {
+    ) -> Result<SpamTxGroup> {
         let conf = self.get_plan_conf();
         let env = conf.get_env().unwrap_or_default();
         let db = self.get_db();
@@ -245,18 +279,14 @@ where
             placeholder_map.insert(key.to_owned(), value.to_owned());
         }
 
-        let mut txs: Vec<ExecutionRequest> = vec![];
+        let mut prepare_txs: Vec<ExecutionRequest> = vec![];
+        let mut spam_txs: Vec<ExecutionRequest> = vec![];
 
         match plan_type {
             PlanType::Create(on_create_step) => {
                 let create_steps = conf.get_create_steps()?;
-
-                // txs will be grouped by account [from=1, from=1, from=1, from=2, from=2, from=2, ...]
                 for step in create_steps.iter() {
-                    // populate step with from address
                     let step = self.make_strict_create(step, 0)?;
-
-                    // lookup placeholder values in DB & update map before templating
                     templater.find_placeholder_values(
                         &step.bytecode,
                         &mut placeholder_map,
@@ -264,12 +294,11 @@ where
                         &self.get_rpc_url(),
                     )?;
 
-                    // create tx with template values
                     let tx = NamedTxRequestBuilder::new(
                         templater.template_contract_deploy(&step, &placeholder_map)?,
                     )
-                    .with_name(&step.name)
-                    .build();
+                        .with_name(&step.name)
+                        .build();
 
                     let handle = on_create_step(tx.to_owned())?;
                     if let Some(handle) = handle {
@@ -277,23 +306,19 @@ where
                             ContenderError::with_err(e, "join error; callback crashed")
                         })?;
                     }
-                    txs.push(tx.into());
+                    prepare_txs.push(tx.into());
                 }
             }
             PlanType::Setup(on_setup_step) => {
                 let setup_steps = conf.get_setup_steps()?;
-
-                // txs will be grouped by account [from=1, from=1, from=1, from=2, from=2, from=2, ...]
                 let rpc_url = self.get_rpc_url();
 
                 for step in setup_steps.iter() {
-                    // lookup placeholders in DB & update map before templating
                     templater.find_fncall_placeholders(step, db, &mut placeholder_map, &rpc_url)?;
 
-                    // setup tx with template values
                     let tx = NamedTxRequest::new(
                         templater.template_function_call(
-                            &self.make_strict_call(step, 0)?, // 'from' address injected here
+                            &self.make_strict_call(step, 0)?,
                             &placeholder_map,
                         )?,
                         None,
@@ -306,30 +331,25 @@ where
                             ContenderError::with_err(e, "join error; callback crashed")
                         })?;
                     }
-                    txs.push(tx.into());
+                    prepare_txs.push(tx.into());
                 }
             }
             PlanType::Spam(num_txs, on_spam_setup) => {
                 let spam_steps = conf.get_spam_steps()?;
                 let num_steps = spam_steps.len();
-                // round num_txs up to the nearest multiple of num_steps to prevent missed steps
                 let num_txs = num_txs + (num_txs % num_steps);
-                let mut placeholder_map = HashMap::<K, String>::new();
                 let mut canonical_fuzz_map = HashMap::<String, Vec<U256>>::new();
 
-                // finds fuzzed values for a function call definition and populates `canonical_fuzz_map` with fuzzy values.
                 let mut find_fuzz = |req: &FunctionCallDefinition| {
                     let fuzz_args = req.fuzz.to_owned().unwrap_or_default();
-                    let fuzz_map = self.create_fuzz_map(num_txs, &fuzz_args)?; // this may create more values than needed, but it's fine
+                    let fuzz_map = self.create_fuzz_map(num_txs, &fuzz_args)?;
                     canonical_fuzz_map.extend(fuzz_map);
                     Ok(())
                 };
 
-                // finds placeholders in a function call definition and populates `placeholder_map` and `canonical_fuzz_map` with injectable values.
                 let rpc_url = self.get_rpc_url();
                 let mut lookup_tx_placeholders = |tx: &FunctionCallDefinition| {
-                    let res =
-                        templater.find_fncall_placeholders(tx, db, &mut placeholder_map, &rpc_url);
+                    let res = templater.find_fncall_placeholders(tx, db, &mut placeholder_map, &rpc_url);
                     if let Err(e) = res {
                         eprintln!("error finding placeholders: {}", e);
                         return Err(ContenderError::SpamError(
@@ -342,7 +362,6 @@ where
                 };
 
                 for step in spam_steps.iter() {
-                    // populate placeholder map for each step
                     match step {
                         SpamRequest::Tx(tx) => {
                             lookup_tx_placeholders(tx)?;
@@ -352,6 +371,7 @@ where
                                 lookup_tx_placeholders(tx)?;
                             }
                         }
+                        _ => {}
                     };
                 }
 
@@ -368,46 +388,54 @@ where
                     ));
                 }
 
-                // txs will be grouped by step [from=1, from=2, from=3, from=1, from=2, from=3, ...]
+                let prepare_tx = |req: &FunctionCallDefinition, i: usize| {
+                    let args = get_fuzzed_args(req, &canonical_fuzz_map, i);
+                    let fuzz_tx_value = get_fuzzed_tx_value(req, &canonical_fuzz_map, i);
+                    let mut req = req.to_owned();
+                    req.args = Some(args);
+
+                    if fuzz_tx_value.is_some() {
+                        req.value = fuzz_tx_value;
+                    }
+
+                    let tx = NamedTxRequest::new(
+                        templater.template_function_call(
+                            &self.make_strict_call(&req, i % num_accts)?,
+                            &placeholder_map,
+                        )?,
+                        None,
+                        req.kind.to_owned(),
+                    );
+                    Ok((on_spam_setup(tx.to_owned())?, tx))
+                };
+
                 for step in spam_steps.iter() {
-                    for i in 0..(num_txs / num_steps) {
-                        // converts a FunctionCallDefinition to a NamedTxRequest (filling in fuzzable args),
-                        // returns a callback handle and the processed tx request
-                        let prepare_tx = |req| {
-                            let args = get_fuzzed_args(req, &canonical_fuzz_map, i);
-                            let fuzz_tx_value = get_fuzzed_tx_value(req, &canonical_fuzz_map, i);
-                            let mut req = req.to_owned();
-                            req.args = Some(args);
-
-                            if fuzz_tx_value.is_some() {
-                                req.value = fuzz_tx_value;
-                            }
-
-                            let tx = NamedTxRequest::new(
-                                templater.template_function_call(
-                                    &self.make_strict_call(&req, i % num_accts)?, // 'from' address injected here
-                                    &placeholder_map,
-                                )?,
-                                None,
-                                req.kind.to_owned(),
-                            );
-                            Ok((on_spam_setup(tx.to_owned())?, tx))
-                        };
-
-                        match step {
-                            SpamRequest::Tx(req) => {
-                                let (handle, tx) = prepare_tx(req)?;
+                    match step {
+                        SpamRequest::Tx(req) => {
+                            for i in 0..(num_txs / num_steps) {
+                                let (handle, tx) = prepare_tx(req, i)?;
                                 if let Some(handle) = handle {
                                     handle.await.map_err(|e| {
                                         ContenderError::with_err(e, "error from callback")
                                     })?;
                                 }
-                                txs.push(tx.into());
+                                spam_txs.push(tx.into());
                             }
-                            SpamRequest::Bundle(req) => {
+                        }
+                        SpamRequest::Prepare(req) => {
+                            let (handle, tx) = prepare_tx(req, 0)?;
+                            if let Some(handle) = handle {
+                                handle.await.map_err(|e| {
+                                    ContenderError::with_err(e, "error from callback")
+                                })?;
+                            }
+                            prepare_txs.push(tx.into());
+                        }
+                        SpamRequest::Bundle(req) => {
+                            for i in 0..(num_txs / num_steps) {
                                 let mut bundle_txs = vec![];
                                 for tx in req.txs.iter() {
-                                    let (handle, txr) = prepare_tx(tx)?;
+                                    let (handle, txr) = prepare_tx(tx, i)?;
                                     if let Some(handle) = handle {
                                         handle.await.map_err(|e| {
                                             ContenderError::with_err(e, "error from callback")
@@ -415,7 +443,7 @@ where
                                     }
                                     bundle_txs.push(txr);
                                 }
-                                txs.push(bundle_txs.into());
+                                spam_txs.push(bundle_txs.into());
                             }
                         }
                     }
@@ -423,7 +451,10 @@ where
             }
         }
 
-        Ok(txs)
+        Ok(SpamTxGroup {
+            prepare_txs,
+            spam_txs,
+        })
     }
 }
 
