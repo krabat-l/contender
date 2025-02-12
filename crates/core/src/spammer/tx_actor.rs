@@ -294,9 +294,9 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         if !new_confirmed_txs.is_empty() {
                             self.current_second_tx_count += new_confirmed_txs.len();
                             self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
-                            println!("confirmed {}/{} txs at fragment {}, block {}, current block tx count: {}, remaining: {}/{}",
+                            println!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
                                      new_confirmed_txs.len(), transactions.len(), fragment_index,
-                                     block_number, tx_offset as usize + transactions.len(),
+                                     block_number, tx_offset as usize + transactions.len(), gas_used,
                                      self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len(),
                                      self.expected_tx_count);
 
