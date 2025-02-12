@@ -266,3 +266,40 @@ args = [
      "{testToken2}",
      "500000000000"
 ]
+
+[[spam]]
+
+#admin
+[spam.tx]
+kind = "spammers_approve_router_weth"
+to = "{weth}"
+from_pool = "spammers"
+signature = "approve(address spender, uint256 amount) returns (bool)"
+args = [
+     "{uniRouterV2}",
+     "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+]
+
+[[spam]]
+
+[spam.tx]
+kind = "spammers_approve_router_testToken"
+to = "{testToken}"
+from_pool = "spammers"
+signature = "approve(address spender, uint256 amount) returns (bool)"
+args = [
+     "{uniRouterV2}",
+     "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+]
+
+[[spam]]
+
+[spam.tx]
+kind = "spammers_approve_router_testToken2"
+to = "{testToken2}"
+from_pool = "spammers"
+signature = "approve(address spender, uint256 amount) returns (bool)"
+args = [
+     "{uniRouterV2}",
+     "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+]

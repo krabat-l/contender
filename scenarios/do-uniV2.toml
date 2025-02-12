@@ -10,7 +10,7 @@ signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,a
 args = [
      "100000",  # amountIn
      "0",                  # amountOutMin
-     ["{weth}", "{testToken}"],  # path
+     "[{weth}, {testToken}]",  # path
      "{_sender}",              # to address
      "999999999999"       # deadline (far future)
 ]
@@ -25,7 +25,7 @@ signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,a
 args = [
      "100000",
      "0",
-     ["{testToken}", "{weth}"],
+     "[{testToken}, {weth}]",
      "{_sender}",
      "999999999999"
 ]
@@ -40,7 +40,7 @@ signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,a
 args = [
      "100000",
      "0",
-     ["{weth}", "{testToken2}"],
+     "[{weth}, {testToken2}]",
      "{_sender}",
      "999999999999"
 ]
@@ -55,7 +55,7 @@ signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,a
 args = [
      "100000",
      "0",
-     ["{testToken2}", "{weth}"],
+     "[{testToken2}, {weth}]",
      "{_sender}",
      "999999999999"
 ]
@@ -70,7 +70,7 @@ signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,a
 args = [
      "100000",
      "0",
-     ["{testToken}", "{testToken2}"],
+     "[{testToken}, {testToken2}]",
      "{_sender}",
      "999999999999"
 ]
@@ -85,7 +85,7 @@ signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,a
 args = [
      "100000",
      "0",
-     ["{testToken2}", "{testToken}"],
+     "[{testToken2}, {testToken}]",
      "{_sender}",
      "999999999999"
 ]
