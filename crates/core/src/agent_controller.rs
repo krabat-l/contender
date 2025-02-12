@@ -89,7 +89,7 @@ where
 impl SignerStore {
     pub fn new_random(num_signers: usize, rand_seeder: &RandSeed, acct_seed: &str) -> Self {
         // add numerical value of acct_seed to given seed
-        let new_seed = rand_seeder.as_u256() + U256::from_be_slice(acct_seed.as_bytes());
+        let new_seed = U256::from_be_slice(acct_seed.as_bytes());
         let rand_seeder = RandSeed::seed_from_u256(new_seed);
 
         // generate random private keys with new seed

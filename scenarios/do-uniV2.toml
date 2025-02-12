@@ -1,0 +1,91 @@
+### SPAM
+
+[[spam]]
+
+[spam.tx]
+kind = "uniswap_v2_swap_weth-testToken"
+to = "{uniRouterV2}"
+from_pool = "spammers"
+signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,address[] calldata path,address to,uint deadline) external returns (uint[] memory amounts)"
+args = [
+     "100000",  # amountIn
+     "0",                  # amountOutMin
+     ["{weth}", "{testToken}"],  # path
+     "{_sender}",              # to address
+     "999999999999"       # deadline (far future)
+]
+
+[[spam]]
+
+[spam.tx]
+kind = "uniswap_v2_swap_testToken-weth"
+to = "{uniRouterV2}"
+from_pool = "spammers"
+signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,address[] calldata path,address to,uint deadline) external returns (uint[] memory amounts)"
+args = [
+     "100000",
+     "0",
+     ["{testToken}", "{weth}"],
+     "{_sender}",
+     "999999999999"
+]
+
+[[spam]]
+
+[spam.tx]
+kind = "uniswap_v2_swap_weth-testToken2"
+to = "{uniRouterV2}"
+from_pool = "spammers"
+signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,address[] calldata path,address to,uint deadline) external returns (uint[] memory amounts)"
+args = [
+     "100000",
+     "0",
+     ["{weth}", "{testToken2}"],
+     "{_sender}",
+     "999999999999"
+]
+
+[[spam]]
+
+[spam.tx]
+kind = "uniswap_v2_swap_testToken2-weth"
+to = "{uniRouterV2}"
+from_pool = "spammers"
+signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,address[] calldata path,address to,uint deadline) external returns (uint[] memory amounts)"
+args = [
+     "100000",
+     "0",
+     ["{testToken2}", "{weth}"],
+     "{_sender}",
+     "999999999999"
+]
+
+[[spam]]
+
+[spam.tx]
+kind = "uniswap_v2_swap_testToken-testToken2"
+to = "{uniRouterV2}"
+from_pool = "spammers"
+signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,address[] calldata path,address to,uint deadline) external returns (uint[] memory amounts)"
+args = [
+     "100000",
+     "0",
+     ["{testToken}", "{testToken2}"],
+     "{_sender}",
+     "999999999999"
+]
+
+[[spam]]
+
+[spam.tx]
+kind = "uniswap_v2_swap_testToken2-testToken"
+to = "{uniRouterV2}"
+from_pool = "spammers"
+signature = "function swapExactTokensForTokens(uint amountIn,uint amountOutMin,address[] calldata path,address to,uint deadline) external returns (uint[] memory amounts)"
+args = [
+     "100000",
+     "0",
+     ["{testToken2}", "{testToken}"],
+     "{_sender}",
+     "999999999999"
+]
