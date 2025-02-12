@@ -101,6 +101,7 @@ struct TxActor<D> where D: DbOps {
     client_pool: Arc<RpcClientPool>,
     recent_confirmations: Vec<(usize, usize)>,
     current_second_tx_count: usize,
+    current_second_gas_used: u64,
     tps_file: String,
 }
 
@@ -143,16 +144,17 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             client_pool,
             recent_confirmations: Vec::new(),
             current_second_tx_count: 0,
+            current_second_gas_used: 0,
             tps_file,
         }
     }
 
-    fn write_tps_to_file(&mut self, timestamp: i64, tps: usize) {
+    fn write_tps_to_file(&mut self, timestamp: i64, tps: usize, gas_used: u64) {
         if let Ok(mut file) = OpenOptions::new()
             .append(true)
             .open(&self.tps_file)
         {
-            writeln!(file, "{},{}", timestamp, tps)
+            writeln!(file, "{},{},{}", timestamp, tps, gas_used)
                 .expect("Failed to write TPS data");
         }
     }
@@ -293,6 +295,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
 
                         if !new_confirmed_txs.is_empty() {
                             self.current_second_tx_count += new_confirmed_txs.len();
+                            self.current_second_gas_used += gas_used;
                             self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
                             println!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
                                      new_confirmed_txs.len(), transactions.len(), fragment_index,
@@ -377,8 +380,9 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards")
                         .as_secs() as i64;
-                    self.write_tps_to_file(current_timestamp, self.current_second_tx_count);
+                    self.write_tps_to_file(current_timestamp, self.current_second_tx_count, self.current_second_gas_used);
                     self.current_second_tx_count = 0;
+                    self.current_second_gas_used = 0;
                     if !self.all_run_txs.is_empty() {
                         self.print_stats();
                     }
