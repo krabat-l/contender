@@ -50,7 +50,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::read_to_string(&seed_path).expect("failed to read seed file")
     );
 
-
     match args.command {
         ContenderSubcommand::Db { command } => match command {
             DbCommand::Drop => commands::drop_db(&db_path).await?,

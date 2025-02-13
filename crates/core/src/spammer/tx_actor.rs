@@ -123,7 +123,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 500));
+        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 200));
         let now = Utc::now();
         let tps_file = format!("tps_data_{}.csv", now.format("%Y%m%d_%H%M%S"));
         let mut file = OpenOptions::new()
@@ -342,9 +342,9 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
                     let index = num as usize % self.client_pool.pool_size;
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs.clone());
+                    self.queue_count.fetch_add(txs.len(), Ordering::Relaxed);
                 }
 
-                self.queue_count.fetch_add(tx_groups.len(), Ordering::Relaxed);
                 let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
@@ -364,7 +364,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             });
                             let _ = client.send_tx_envelope(tx).await;
                             sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                            queue_count.fetch_sub(txs.len(), Ordering::Relaxed);
+                            queue_count.fetch_sub(1, Ordering::Relaxed);
                         }
                     })
                 }).collect();
