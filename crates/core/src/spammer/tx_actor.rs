@@ -331,7 +331,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 tx_groups,
             } => {
 
-                let queue_num = self.sent_count.load(Ordering::Relaxed);
+                let queue_num = self.queue_count.load(Ordering::Relaxed);
                 if queue_num != 0 {
                     log::warn!("There are {} txs not send to client", queue_num);
                 }
