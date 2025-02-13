@@ -20,6 +20,9 @@ static DB: LazyLock<SqliteDb> = std::sync::LazyLock::new(|| {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+
+    env_logger::init();
+
     let args = ContenderCli::parse_args();
     DB.create_tables()?;
     let db = DB.clone();
@@ -39,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "0x{}",
         std::fs::read_to_string(&seed_path).expect("failed to read seed file")
     );
+
 
     match args.command {
         ContenderSubcommand::Db { command } => match command {
