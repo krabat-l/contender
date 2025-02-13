@@ -305,7 +305,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
 
                             if let Some(run_id) = self.run_id {
                                 self.all_run_txs.extend(new_confirmed_txs.clone());
-                                self.db.insert_run_txs(run_id, new_confirmed_txs.clone())?;
+                                // self.db.insert_run_txs(run_id, new_confirmed_txs.clone())?;
                                 self.confirmed_count += new_confirmed_txs.len();
 
                                 if self.confirmed_count >= self.expected_tx_count {
