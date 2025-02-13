@@ -61,7 +61,7 @@ impl From<BuiltinScenarioConfig> for TestConfig {
             } => {
                 let gas_per_tx =
                     ((max_gas_per_block / num_txs as u128) / 100) * fill_percent as u128;
-                println!(
+                log::info!(
                     "Filling blocks to {}% with {} gas per tx",
                     fill_percent, gas_per_tx
                 );

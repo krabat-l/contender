@@ -400,9 +400,9 @@ mod tests {
         db.create_tables().unwrap();
         let do_it = |num| db.insert_run(100000, num, "test").unwrap();
 
-        println!("id: {}", do_it(100));
-        println!("id: {}", do_it(101));
-        println!("id: {}", do_it(102));
+        log::info!("id: {}", do_it(100));
+        log::info!("id: {}", do_it(101));
+        log::info!("id: {}", do_it(102));
         assert_eq!(db.num_runs().unwrap(), 3);
     }
 

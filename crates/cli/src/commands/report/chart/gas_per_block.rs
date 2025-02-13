@@ -104,7 +104,7 @@ impl GasPerBlockChart {
         chart.draw_series(chart_data.map(|(x, y)| mk_dot((x, y))))?;
 
         root.present()?;
-        println!("saved chart to {}", filepath.as_ref());
+        log::info!("saved chart to {}", filepath.as_ref());
 
         Ok(())
     }

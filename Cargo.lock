@@ -1267,6 +1267,7 @@ dependencies = [
  "contender_testfile",
  "csv",
  "handlebars",
+ "log",
  "plotters",
  "rand",
  "regex",
@@ -1290,6 +1291,7 @@ dependencies = [
  "dashmap",
  "futures",
  "hex",
+ "log",
  "rand",
  "reqwest 0.12.12",
  "serde",
@@ -1306,6 +1308,7 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "contender_core",
+ "log",
  "r2d2",
  "r2d2_sqlite",
  "rusqlite",

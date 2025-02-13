@@ -103,11 +103,11 @@ pub async fn run(
     };
 
     if do_deploy_contracts {
-        println!("deploying contracts...");
+        log::info!("deploying contracts...");
         scenario.deploy_contracts().await?;
     }
 
-    println!("running setup...");
+    log::info!("running setup...");
     scenario.run_setup().await?;
 
     let wait_duration = std::time::Duration::from_secs(interval as u64);
@@ -118,7 +118,7 @@ pub async fn run(
             .on_http(rpc_url),
     ));
 
-    println!("starting spammer...");
+    log::info!("starting spammer...");
     spammer
         .spam_rpc(
             &mut scenario,

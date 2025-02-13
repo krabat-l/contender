@@ -41,7 +41,7 @@ where
             .into_stream()
             .flat_map(futures::stream::iter)
             .map(|b| {
-                println!("new block detected: {:?}", b);
+                log::info!("new block detected: {:?}", b);
                 SpamTrigger::BlockHash(b)
             })
             .boxed())
@@ -68,7 +68,7 @@ where
 //     async fn watches_blocks_and_spams_them() {
 //         let anvil = spawn_anvil();
 //         let provider = ProviderBuilder::new().on_http(anvil.endpoint_url().to_owned());
-//         println!("anvil url: {}", anvil.endpoint_url());
+//         log::info!("anvil url: {}", anvil.endpoint_url());
 //         let seed = crate::generator::RandSeed::seed_from_str("444444444444");
 //         let mut agents = AgentStore::new();
 //         let txs_per_period = 10;
@@ -99,7 +99,7 @@ where
 //                 )
 //                 .await
 //                 .unwrap();
-//                 println!("funded signer: {:?}", res);
+//                 log::info!("funded signer: {:?}", res);
 //                 provider.watch_pending_transaction(res).await.unwrap();
 //                 nonce += 1;
 //             }
@@ -153,7 +153,7 @@ where
 //         }
 //
 //         for addr in unique_addresses.iter() {
-//             println!("unique address: {}", addr);
+//             log::info!("unique address: {}", addr);
 //         }
 //
 //         assert!(unique_addresses.len() >= (txs_per_period / periods));

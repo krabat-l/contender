@@ -21,6 +21,7 @@ use alloy::transports::http::reqwest::Url;
 use contender_bundle_provider::bundle_provider::new_basic_bundle;
 use contender_bundle_provider::BundleClient;
 use std::collections::HashMap;
+use std::ops::Mul;
 use std::sync::Arc;
 
 /// A test scenario can be used to run a test with a specific configuration, database, and RPC provider.
@@ -81,7 +82,7 @@ where
             wallet_map.insert(addr, wallet);
         }
         for (name, signers) in agent_store.all_agents() {
-            println!("adding '{}' signers to wallet map", name);
+            log::info!("adding '{}' signers to wallet map", name);
             for signer in signers.signers.iter() {
                 wallet_map.insert(signer.address(), EthereumWallet::new(signer.clone()));
             }
@@ -172,7 +173,7 @@ where
                 .wallet(wallet_conf)
                 .on_http(self.rpc_url.to_owned());
 
-            println!(
+            log::info!(
                 "deploying contract: {:?}",
                 tx_req.name.as_ref().unwrap_or(&"".to_string())
             );
@@ -212,7 +213,7 @@ where
                 let res =
                     res.expect("this will never happen. If it does, I'm a terrible programmer.");
                 let receipt = res.get_receipt().await.expect("failed to get receipt");
-                println!(
+                log::info!(
                     "contract address: {}",
                     receipt.contract_address.unwrap_or_default()
                 );
@@ -238,7 +239,7 @@ where
     pub async fn run_setup(&mut self) -> Result<()> {
         self.load_txs(PlanType::Setup(|tx_req| {
             /* callback */
-            println!("{}", self.format_setup_log(&tx_req));
+            log::info!("{}", self.format_setup_log(&tx_req));
 
             // First, extract and clone all the data we need from tx_req
             let from = match tx_req.tx.from {
@@ -289,12 +290,12 @@ where
                     panic!("Failed to get balance for address {:?}: {:?}", from, e)
                 });
 
-                println!("Account balance check for tx '{}':", tx_label);
-                println!("  Address: {:?}", from);
-                println!("  Current balance: {} wei", balance);
-                println!("  Gas price: {} wei", gas_price);
-                println!("  Gas limit: {}", gas_limit);
-                println!("  Transfer value: {} wei", value);
+                log::info!("Account balance check for tx '{}':", tx_label);
+                log::info!("  Address: {:?}", from);
+                log::info!("  Current balance: {} wei", balance);
+                log::info!("  Gas price: {} wei", gas_price);
+                log::info!("  Gas limit: {}", gas_limit);
+                log::info!("  Transfer value: {} wei", value);
 
                 let chain_id = wallet.get_chain_id().await.expect("failed to get chain id");
                 let tx = tx
@@ -334,6 +335,7 @@ where
         &mut self,
         tx_req: &TransactionRequest,
         gas_price: u128,
+        mut gas_limit: u128,
     ) -> Result<(TransactionRequest, EthereumWallet)> {
         let from = tx_req.from.ok_or(ContenderError::SetupError(
             "missing 'from' address in tx request",
@@ -352,12 +354,14 @@ where
         let key = keccak256(tx_req.input.input.to_owned().unwrap_or_default());
 
         if let std::collections::hash_map::Entry::Vacant(_) = self.gas_limits.entry(key) {
-            let gas_limit = self
+            if gas_limit == 0 {
+                gas_limit = self
                 .eth_client
                 .estimate_gas(tx_req)
                 .await
                 .map_err(|e| ContenderError::with_err(e, "failed to estimate gas for tx"))?;
-            self.gas_limits.insert(key, gas_limit);
+            }
+            self.gas_limits.insert(key, gas_limit.mul(2));
         }
         let gas_limit = self
             .gas_limits
@@ -396,69 +400,24 @@ where
             .await
             .map_err(|e| ContenderError::with_err(e, "failed to get gas price"))?;
         let mut payloads = vec![];
+        let first_req = match tx_requests[0].clone() {ExecutionRequest::Bundle(_) => todo!(), ExecutionRequest::Tx(req) => {req}};
+        let gas_limit = self
+            .eth_client
+            .estimate_gas(&first_req.tx.to_owned())
+            .await
+            .map_err(|e| ContenderError::with_err(e, "failed to estimate gas for tx"))?;
         for tx in tx_requests {
             let payload = match tx {
-                ExecutionRequest::Bundle(reqs) => {
-                    if self.bundle_client.is_none() {
-                        return Err(ContenderError::SpamError(
-                            "Bundle client not found. Specify a builder url to send bundles.",
-                            None,
-                        ));
-                    }
-                    // prepare each tx in the bundle (increment nonce, set gas price, etc)
-                    let mut bundle_txs = vec![];
-
-                    for req in reqs {
-                        let tx_req = req.tx.to_owned();
-                        let (tx_req, signer) = self
-                            .prepare_tx_request(&tx_req, gas_price)
-                            .await
-                            .map_err(|e| ContenderError::with_err(e, "failed to prepare tx"))?;
-
-                        println!("bundle tx from {:?}", tx_req.from);
-                        // sign tx
-                        let tx_envelope = tx_req.build(&signer).await.map_err(|e| {
-                            ContenderError::with_err(e, "bad request: failed to build tx")
-                        })?;
-
-                        bundle_txs.push(tx_envelope);
-                    }
-                    ExecutionPayload::SignedTxBundle(bundle_txs, reqs.to_owned())
-                }
+                ExecutionRequest::Bundle(reqs) => {todo!()}
                 ExecutionRequest::Tx(req) => {
                     let tx_req = req.tx.to_owned();
-
                     let (tx_req, signer) = self
-                        .prepare_tx_request(&tx_req, gas_price)
+                        .prepare_tx_request(&tx_req, gas_price, gas_limit)
                         .await
                         .map_err(|e| ContenderError::with_err(e, "failed to prepare tx"))?;
-
-                    // sign tx
                     let tx_envelope = tx_req.to_owned().build(&signer).await.map_err(|e| {
                         ContenderError::with_err(e, "bad request: failed to build tx")
                     })?;
-
-                    // println!(
-                    //     "sending tx {} from={} to={:?} input={} value={} gas_limit={}",
-                    //     tx_envelope.tx_hash(),
-                    //     tx_req.from.map(|s| s.encode_hex()).unwrap_or_default(),
-                    //     tx_envelope.to().to(),
-                    //     tx_req
-                    //         .input
-                    //         .input
-                    //         .as_ref()
-                    //         .map(|s| s.encode_hex())
-                    //         .unwrap_or_default(),
-                    //     tx_req
-                    //         .value
-                    //         .map(|s| s.to_string())
-                    //         .unwrap_or_else(|| "0".to_owned()),
-                    //     tx_req
-                    //         .gas
-                    //         .map(|g| g.to_string())
-                    //         .unwrap_or_else(|| "N/A".to_owned())
-                    // );
-
                     ExecutionPayload::SignedTx(tx_envelope, req.to_owned())
                 }
             };

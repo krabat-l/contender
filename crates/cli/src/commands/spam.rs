@@ -17,6 +17,7 @@ use contender_core::{
     spammer::{ExecutionPayload, Spammer, TimedSpammer},
     test_scenario::TestScenario,
 };
+use contender_core::generator::named_txs::ExecutionRequest;
 use contender_testfile::TestConfig;
 
 use crate::util::{
@@ -122,7 +123,7 @@ pub async fn spam(
     //     panic!("Must set either --txs-per-block (--tpb) or --txs-per-second (--tps)");
     // }
 
-    println!("funding accounts...");
+    log::info!("funding accounts...");
     fund_accounts(
         &all_signer_addrs,
         &user_signers[0],
@@ -139,7 +140,7 @@ pub async fn spam(
         .as_millis();
     let run_id =
         db.insert_run(timestamp as u64, expected_tx_count, &args.testfile)?;
-    println!("creating test scenario...");
+    log::info!("creating test scenario...");
     let mut scenario = TestScenario::new(
         testconfig,
         db.clone().into(),
@@ -154,7 +155,7 @@ pub async fn spam(
         expected_tx_count,
     )
     .await?;
-    println!("calculate spam cost...");
+    log::info!("calculate spam cost...");
     let total_cost =
         get_max_spam_cost(scenario.to_owned(), &rpc_client).await? * U256::from(duration);
     if min_balance < U256::from(total_cost) {
@@ -169,53 +170,14 @@ pub async fn spam(
         )
         .into());
     }
-    // }
-    // Ok(run_id)
-
-
-
-
-    // trigger blockwise spammer
-    // if let Some(txs_per_block) = args.txs_per_block {
-    //     println!("Blockwise spamming with {} txs per block", txs_per_block);
-    //     let spammer = BlockwiseSpammer {};
-    //
-    //     match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
-    //         SpamCallbackType::Log(cback) => {
-                // let timestamp = std::time::SystemTime::now()
-                //     .duration_since(std::time::UNIX_EPOCH)
-                //     .expect("Time went backwards")
-                //     .as_millis();
-                // spammer
-                //     .spam_rpc(
-                //         &mut scenario,
-                //         txs_per_block,
-                //         duration,
-                //         cback.into(),
-                //     )
-                //     .await?;
-    //         }
-    //         SpamCallbackType::Nil(cback) => {
-    //             spammer
-    //                 .spam_rpc(&mut scenario, txs_per_block, duration, cback.into())
-    //                 .await?;
-    //         }
-    //     };
-    //     return Ok(run_id);
-    // }
 
     // trigger timed spammer
     let tps = args.txs_per_second.unwrap_or(10);
-    println!("Timed spamming with {} txs per second", tps);
+    log::info!("Timed spamming with {} txs per second", tps);
     let interval = std::time::Duration::from_secs(1);
     let spammer = TimedSpammer::new(interval);
     match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
         SpamCallbackType::Log(cback) => {
-        //     let timestamp = std::time::SystemTime::now()
-        //         .duration_since(std::time::UNIX_EPOCH)
-        //         .expect("Time went backwards")
-        //         .as_millis();
-            // run_id = db.insert_run(timestamp as u64, tps * duration, &args.testfile)?;
             spammer
                 .spam_rpc(&mut scenario, tps, duration, cback.into())
                 .await?;
@@ -275,7 +237,7 @@ async fn get_max_spam_cost<D: DbOps + Send + Sync + 'static, S: Seeder + Send + 
     let mut prepared_sample_txs = vec![];
     for tx in sample_txs {
         let tx_req = tx.tx;
-        let (prepared_req, _signer) = scenario.prepare_tx_request(&tx_req, gas_price).await?;
+        let (prepared_req, _signer) = scenario.prepare_tx_request(&tx_req, gas_price, 0).await?;
         println!(
             "tx_request gas={:?} gas_price={:?} ({:?}, {:?})",
             prepared_req.gas,
@@ -294,7 +256,7 @@ async fn get_max_spam_cost<D: DbOps + Send + Sync + 'static, S: Seeder + Send + 
             if let Some(priority_fee) = tx.max_priority_fee_per_gas {
                 gas_price += priority_fee;
             }
-            println!("gas_price={:?}", gas_price);
+            log::info!("gas_price={:?}", gas_price);
             U256::from(gas_price * tx.gas.unwrap_or(0)) + tx.value.unwrap_or(U256::ZERO)
         })
         .max()

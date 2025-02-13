@@ -237,23 +237,23 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         let confirmed_count = self.confirmed_count;
         let queued_on_chain_count = sent_count - confirmed_count;
         let queued_count = self.pending_txs.len();
-        println!("\nTransaction Latency Statistics:");
-        println!("--------------------------------");
-        println!("Sent: {}", sent_count);
-        println!("Confirmed: {}", confirmed_count);
-        println!("Queuing on chain: {}", queued_on_chain_count);
-        println!("Queuing on client: {}", queued_count - queued_on_chain_count);
-        println!("Queuing: {}", queued_count);
-        println!("Current: {}", self.expected_tx_count - confirmed_count);
-        println!("Total: {}", self.expected_tx_count);
-        println!("Start Time: {:?}", start_time);
-        println!("End Time: {:?}", end_time);
-        println!("P50 Latency: {} ms", p50);
-        println!("P99 Latency: {} ms", p99);
-        println!("Max Latency: {} ms", max);
-        println!("Overall Throughput: {:.2} tx/s", throughput);
-        println!("Realtime TPS (15s): {:.2} tx/s", realtime_tps);
-        println!("--------------------------------\n");
+        log::info!("\nTransaction Latency Statistics:");
+        log::info!("--------------------------------");
+        log::info!("Sent: {}", sent_count);
+        log::info!("Confirmed: {}", confirmed_count);
+        log::info!("Queuing on chain: {}", queued_on_chain_count);
+        log::info!("Queuing on client: {}", queued_count - queued_on_chain_count);
+        log::info!("Queuing: {}", queued_count);
+        log::info!("Current: {}", self.expected_tx_count - confirmed_count);
+        log::info!("Total: {}", self.expected_tx_count);
+        log::info!("Start Time: {:?}", start_time);
+        log::info!("End Time: {:?}", end_time);
+        log::info!("P50 Latency: {} ms", p50);
+        log::info!("P99 Latency: {} ms", p99);
+        log::info!("Max Latency: {} ms", max);
+        log::info!("Overall Throughput: {:.2} tx/s", throughput);
+        log::info!("Realtime TPS (15s): {:.2} tx/s", realtime_tps);
+        log::info!("--------------------------------\n");
     }
 
     async fn process_ws_message(&mut self, text: String) -> Result<bool, Box<dyn Error>> {
@@ -298,7 +298,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             self.current_second_tx_count += new_confirmed_txs.len();
                             self.current_second_gas_used += gas_used;
                             self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
-                            println!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
+                            log::info!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
                                      new_confirmed_txs.len(), transactions.len(), fragment_index,
                                      block_number, gas_used, tx_offset as usize + transactions.len(),
                                      self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len(),
@@ -310,7 +310,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 self.confirmed_count += new_confirmed_txs.len();
 
                                 if self.confirmed_count >= self.expected_tx_count {
-                                    println!("Reached expected transaction count: {}", self.expected_tx_count);
+                                    log::info!("Reached expected transaction count: {}", self.expected_tx_count);
                                     self.print_stats();
                                     return Ok(true);
                                 }

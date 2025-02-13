@@ -333,9 +333,9 @@ impl Templater<String> for TestConfig {
 //     }
 //
 //     fn print_testconfig(cfg: &str) {
-//         println!("{}", "-".repeat(80));
-//         println!("{}", cfg);
-//         println!("{}", "-".repeat(80));
+//         log::info!("{}", "-".repeat(80));
+//         log::info!("{}", cfg);
+//         log::info!("{}", "-".repeat(80));
 //     }
 //
 //     #[test]
@@ -388,7 +388,7 @@ impl Templater<String> for TestConfig {
     //     // this seed can be used to recreate the same test tx(s)
     //     let spam_txs = test_gen
     //         .load_txs(PlanType::Spam(10, |_tx_req| {
-    //             println!(
+    //             log::info!(
     //                 "spam tx\n\tfrom={:?}\n\tto={:?}\n\tinput={:?}",
     //                 _tx_req.tx.from, _tx_req.tx.to, _tx_req.tx.input.input
     //             );

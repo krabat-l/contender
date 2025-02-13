@@ -34,7 +34,7 @@ from_pool = "admin"
 signature = "function deposit(address token, uint256 amount) external"
 args = [
      "{testERC20}",
-     "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+     "10000000000000000000000000000000000000000000"
 ]
 ### SPAM
 

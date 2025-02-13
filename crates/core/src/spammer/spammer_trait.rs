@@ -50,8 +50,8 @@ where
         });
 
         async move {
-            println!("start spamming...");
-            println!("loading tx requests...");
+            log::info!("start spamming...");
+            log::info!("loading tx requests...");
             let tx_requests = scenario
                 .load_txs(crate::generator::PlanType::Spam(
                     txs_per_period * num_periods,
@@ -65,19 +65,18 @@ where
                 .await
                 .map_err(|e| ContenderError::with_err(e, "failed to get block number"))?;
 
-            println!("preparing spam txs...");
+            log::info!("preparing spam txs...");
             let mut prepared_payloads = Vec::with_capacity(num_periods);
             for chunk in &tx_req_chunks {
                 prepared_payloads.push(scenario.prepare_spam(chunk).await?);
             }
 
             let mut tick = 0;
-            // let mut cursor = self.on_spam(scenario).await?;
 
-            println!("executing spam txs...");
+            log::info!("executing spam txs...");
             while tick < num_periods {
                 let start_time = std::time::Instant::now();
-                println!("[{}] start send txs, current datetime: {}", tick, chrono::Local::now().to_string());
+                log::info!("[{}] start send txs, current datetime: {}", tick, chrono::Local::now().to_string());
                 let spam_tasks = scenario
                     .execute_spam(&prepared_payloads[tick], sent_tx_callback.clone())
                     .await?;
@@ -89,7 +88,7 @@ where
                     }
                 }
 
-                println!("[{}] end send txs, current datetime: {}", tick, chrono::Local::now().to_string());
+                log::info!("[{}] end send txs, current datetime: {}", tick, chrono::Local::now().to_string());
 
                 let elapsed = start_time.elapsed();
                 if elapsed < std::time::Duration::from_secs(1) {

@@ -85,7 +85,7 @@ pub fn get_spam_pools(testconfig: &TestConfig) -> Vec<String> {
 
 pub fn get_signers_with_defaults(private_keys: Option<Vec<String>>) -> Vec<PrivateKeySigner> {
     if private_keys.is_none() {
-        println!("No private keys provided. Using default private keys.");
+        log::info!("No private keys provided. Using default private keys.");
     }
     let private_keys = private_keys.unwrap_or_default();
     let private_keys = [
@@ -159,6 +159,9 @@ pub async fn fund_accounts(
     eth_client: &EthProvider,
     min_balance: U256,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if min_balance <= U256::from(0) {
+        return Ok(());
+    }
     let insufficient_balances =
         find_insufficient_balances(recipient_addresses, min_balance, rpc_client).await?;
 
@@ -217,7 +220,7 @@ pub async fn fund_accounts(
 
     for tx in pending_fund_txs {
         let pending = rpc_client.watch_pending_transaction(tx).await?;
-        // println!("funding tx confirmed ({})", pending.await?);
+        // log::info!("funding tx confirmed ({})", pending.await?);
     }
 
     Ok(())
@@ -230,7 +233,7 @@ pub async fn fund_account(
     rpc_client: &EthProvider,
     nonce: Option<u64>,
 ) -> Result<PendingTransactionConfig, Box<dyn std::error::Error>> {
-    // println!(
+    // log::info!(
     //     "funding account {} with user account {}",
     //     recipient,
     //     sender.address()
@@ -385,7 +388,7 @@ mod test {
 
         for addr in &recipient_addresses {
             let balance = rpc_client.get_balance(*addr).await.unwrap();
-            println!("balance of {}: {}", addr, balance);
+            log::info!("balance of {}: {}", addr, balance);
             assert_eq!(balance, U256::from(ETH_TO_WEI));
         }
 
@@ -399,7 +402,7 @@ mod test {
             min_balance,
         )
         .await;
-        println!("res: {:?}", res);
+        log::info!("res: {:?}", res);
         assert!(res.is_err());
     }
 }

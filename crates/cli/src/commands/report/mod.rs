@@ -31,7 +31,7 @@ pub async fn report(
     let num_runs = db.num_runs()?;
 
     if num_runs == 0 {
-        println!("No runs found in the database. Exiting.");
+        log::info!("No runs found in the database. Exiting.");
         return Ok(());
     }
 
@@ -44,7 +44,7 @@ pub async fn report(
         id
     } else {
         // get latest run
-        println!("No run ID provided. Using latest run ID: {}", num_runs);
+        log::info!("No run ID provided. Using latest run ID: {}", num_runs);
         num_runs
     };
 
@@ -128,7 +128,7 @@ fn save_csv_report(id: u64, txs: &[RunTx]) -> Result<(), Box<dyn std::error::Err
     let report_dir = report_dir()?;
     let out_path = format!("{report_dir}/{id}.csv");
 
-    println!("Exporting report for run #{:?} to {:?}", id, out_path);
+    log::info!("Exporting report for run #{:?} to {:?}", id, out_path);
     let mut writer = WriterBuilder::new().has_headers(true).from_path(out_path)?;
     write_run_txs(&mut writer, txs)?;
 

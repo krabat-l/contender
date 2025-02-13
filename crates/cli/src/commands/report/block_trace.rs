@@ -33,7 +33,7 @@ pub async fn get_block_trace_data(
     rpc_client: &EthProvider,
 ) -> Result<(Vec<TxTraceReceipt>, Vec<Block>), Box<dyn std::error::Error>> {
     if std::env::var("DEBUG_USEFILE").is_ok() {
-        println!("DEBUG_USEFILE detected: using cached data");
+        log::info!("DEBUG_USEFILE detected: using cached data");
         // load trace data from file
         let cache_data = CacheFile::load()?;
         return Ok((cache_data.traces, cache_data.blocks));
@@ -56,7 +56,7 @@ pub async fn get_block_trace_data(
             .get_block_by_number(block_num.into(), true)
             .await?;
         if let Some(block) = block {
-            println!("read block {}", block.header.number);
+            log::info!("read block {}", block.header.number);
             all_blocks.push(block);
         }
     }
@@ -65,7 +65,7 @@ pub async fn get_block_trace_data(
     let mut all_traces = vec![];
     for block in &all_blocks {
         for tx_hash in block.transactions.hashes() {
-            println!("tracing tx {:?}", tx_hash);
+            log::info!("tracing tx {:?}", tx_hash);
             let trace = rpc_client
                 .debug_trace_transaction(
                     tx_hash,
@@ -91,13 +91,13 @@ pub async fn get_block_trace_data(
             let receipt = rpc_client.get_transaction_receipt(tx_hash).await;
             if let Ok(receipt) = receipt {
                 if let Some(receipt) = receipt {
-                    println!("got receipt for tx {:?}", tx_hash);
+                    log::info!("got receipt for tx {:?}", tx_hash);
                     all_traces.push(TxTraceReceipt::new(trace, receipt));
                 } else {
-                    println!("no receipt for tx {:?}", tx_hash);
+                    log::info!("no receipt for tx {:?}", tx_hash);
                 }
             } else {
-                println!("ignored receipt for tx {:?} (failed to decode)", tx_hash);
+                log::info!("ignored receipt for tx {:?} (failed to decode)", tx_hash);
             }
         }
     }

@@ -9,11 +9,12 @@ use commands::{ContenderCli, ContenderSubcommand, DbCommand, SpamCommandArgs};
 use contender_core::{db::DbOps, generator::RandSeed};
 use contender_sqlite::SqliteDb;
 use rand::Rng;
+use log::log;
 use util::{data_dir, db_file};
 
 static DB: LazyLock<SqliteDb> = std::sync::LazyLock::new(|| {
     let path = db_file().expect("failed to get DB file path");
-    println!("opening DB at {}", path);
+    log::info!("opening DB at {}", path);
     SqliteDb::from_file(&path).expect("failed to open contender DB file")
 });
 
@@ -27,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let seed_path = format!("{}/seed", &data_path);
     if !std::path::Path::new(&seed_path).exists() {
-        println!("generating seed file at {}", &seed_path);
+        log::info!("generating seed file at {}", &seed_path);
         let mut rng = rand::thread_rng();
         let seed: [u8; 32] = rng.gen();
         let seed_hex = hex::encode(seed);

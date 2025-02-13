@@ -26,7 +26,7 @@ pub mod test {
             _signed_tx: HashMap<Address, Vec<TxEnvelope>>,
             _tx_handler: Option<Arc<TxActorHandle>>,
         ) -> Option<JoinHandle<()>> {
-            // println!("MockCallback::on_tx_sent: tx_hash={}", _tx_res.tx_hash());
+            // log::info!("MockCallback::on_tx_sent: tx_hash={}", _tx_res.tx_hash());
             None
         }
     }
@@ -49,7 +49,7 @@ pub mod test {
         rpc_client: &EthProvider,
         nonce: Option<u64>,
     ) -> Result<PendingTransactionConfig, Box<dyn std::error::Error>> {
-        // println!(
+        // log::info!(
         //     "funding account {} with user account {}",
         //     recipient,
         //     sender.address()
