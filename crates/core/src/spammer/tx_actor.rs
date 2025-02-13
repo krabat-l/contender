@@ -330,7 +330,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             TxActorMessage::SentRunTx {
                 tx_groups,
             } => {
-
                 let queue_num = self.queue_count.load(Ordering::Relaxed);
                 if queue_num != 0 {
                     log::warn!("There are {} txs not send to client", queue_num);
@@ -338,7 +337,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 let mut client_txs = HashMap::new();
                 for (from, txs) in tx_groups.clone() {
                     let addr_bytes = from.to_vec();
-                    let prefix = &addr_bytes[0..12];
+                    let prefix = &addr_bytes[0..4];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
                     let index = num as usize % 1000;
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs.clone());
