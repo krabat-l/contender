@@ -339,7 +339,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let addr_bytes = from.to_vec();
                     let prefix = &addr_bytes[0..4];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
-                    let index = num as usize % 1000;
+                    let index = num as usize % 2000;
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs.clone());
                     self.queue_count.fetch_add(txs.len(), Ordering::Relaxed);
                 }
@@ -361,7 +361,16 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 tx_hash: *tx_hash,
                                 start_timestamp: start_timestamp as usize,
                             });
-                            let _ = client.send_tx_envelope(tx).await;
+                            match client.send_tx_envelope(tx).await {
+                                Ok(_) => {
+                                    sent_count_clone.fetch_add(1, Ordering::Relaxed);
+                                    queue_count.fetch_sub(1, Ordering::Relaxed);
+                                },
+                                Err(e) => {
+                                    eprintln!("Error sending transaction: {:?}", e);
+                                    return;
+                                },
+                            }
                             sent_count_clone.fetch_add(1, Ordering::Relaxed);
                             queue_count.fetch_sub(1, Ordering::Relaxed);
                         }
