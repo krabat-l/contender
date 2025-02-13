@@ -338,9 +338,9 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 let mut client_txs = HashMap::new();
                 for (from, txs) in tx_groups.clone() {
                     let addr_bytes = from.to_vec();
-                    let prefix = &addr_bytes[0..4];
+                    let prefix = &addr_bytes[0..12];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
-                    let index = num as usize % self.client_pool.pool_size;
+                    let index = num as usize % 1000;
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs.clone());
                     self.queue_count.fetch_add(txs.len(), Ordering::Relaxed);
                 }
