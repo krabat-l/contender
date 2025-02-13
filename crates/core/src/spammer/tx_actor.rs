@@ -123,7 +123,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 200));
+        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 50));
         let now = Utc::now();
         let tps_file = format!("tps_data_{}.csv", now.format("%Y%m%d_%H%M%S"));
         let mut file = OpenOptions::new()
