@@ -11,6 +11,7 @@ use contender_sqlite::SqliteDb;
 use rand::Rng;
 use log::log;
 use util::{data_dir, db_file};
+use env_logger::{Builder, Env};
 
 static DB: LazyLock<SqliteDb> = std::sync::LazyLock::new(|| {
     let path = db_file().expect("failed to get DB file path");
@@ -18,10 +19,16 @@ static DB: LazyLock<SqliteDb> = std::sync::LazyLock::new(|| {
     SqliteDb::from_file(&path).expect("failed to open contender DB file")
 });
 
+fn setup_logging() {
+    Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp_secs()
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
-    env_logger::init();
+    setup_logging();
 
     let args = ContenderCli::parse_args();
     DB.create_tables()?;
