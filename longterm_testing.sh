@@ -23,6 +23,14 @@ get_timestamp() {
     date '+%Y-%m-%d %H:%M:%S'
 }
 
+print_separator() {
+    local message="$1"
+    local timestamp=$(get_timestamp)
+    echo "======================================"
+    echo "[$timestamp] $message"
+    echo "======================================"
+}
+
 # Function to run a single command
 run_command() {
     local cmd="$1"
