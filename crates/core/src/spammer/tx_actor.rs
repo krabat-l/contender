@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use alloy::consensus::{Transaction, TxEnvelope};
 use alloy::network::AnyNetwork;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use dashmap::DashMap;
 use web3::{
     futures::StreamExt,
@@ -35,32 +35,72 @@ pub struct TransactionSigned {
     pub hash: TxHash,
 }
 
-pub struct RpcClientPool {
-    clients: Vec<Arc<AnyProvider>>,
-    pool_size: usize,
+pub struct RpcConnection {
+    provider: Arc<AnyProvider>,
+    in_use: bool,
 }
 
+pub struct RpcClientPool {
+    connections: Arc<DashMap<usize, RpcConnection>>,
+    semaphore: Arc<Semaphore>,
+    pool_size: usize,
+    rpc_url: Url,
+}
 impl RpcClientPool {
     pub fn new(rpc_url: Url, pool_size: usize) -> Self {
-        let clients: Vec<Arc<AnyProvider>> = (0..pool_size)
-            .map(|_| {
-                Arc::new(
-                    ProviderBuilder::new()
-                        .network::<AnyNetwork>()
-                        .on_http(rpc_url.to_owned())
-                )
-            })
-            .collect();
+        let connections = Arc::new(DashMap::new());
+
+        for i in 0..pool_size {
+            let provider = Arc::new(
+                ProviderBuilder::new()
+                    .network::<AnyNetwork>()
+                    .on_http(rpc_url.to_owned())
+            );
+
+            connections.insert(i, RpcConnection {
+                provider,
+                in_use: false,
+            });
+        }
 
         Self {
-            clients,
+            connections,
+            semaphore: Arc::new(Semaphore::new(pool_size)),
             pool_size,
+            rpc_url,
         }
     }
 
-    pub fn get_client_for_address(&self, num: &usize) -> Arc<AnyProvider> {
-        let index = num % self.pool_size;
-        self.clients[index].clone()
+    pub async fn get_client(&self, index: usize) -> Result<Arc<AnyProvider>, Box<dyn std::error::Error>> {
+        let _permit = self.semaphore.acquire().await?;
+
+        let conn_index = index % self.pool_size;
+        if let Some(mut conn) = self.connections.get_mut(&conn_index) {
+            if !conn.in_use {
+                conn.in_use = true;
+                return Ok(conn.provider.clone());
+            }
+        }
+
+        let provider = Arc::new(
+            ProviderBuilder::new()
+                .network::<AnyNetwork>()
+                .on_http(self.rpc_url.to_owned())
+        );
+
+        self.connections.insert(conn_index, RpcConnection {
+            provider: provider.clone(),
+            in_use: true,
+        });
+
+        Ok(provider)
+    }
+
+    pub async fn release_client(&self, index: usize) {
+        let conn_index = index % self.pool_size;
+        if let Some(mut conn) = self.connections.get_mut(&conn_index) {
+            conn.in_use = false;
+        }
     }
 }
 
@@ -327,55 +367,50 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         message: TxActorMessage,
     ) -> Result<(), Box<dyn Error>> {
         match message {
-            TxActorMessage::SentRunTx {
-                tx_groups,
-            } => {
-                let queue_num = self.queue_count.load(Ordering::Relaxed);
-                if queue_num != 0 {
-                    log::warn!("There are {} txs not send to client", queue_num);
-                }
+            TxActorMessage::SentRunTx { tx_groups } => {
                 let mut client_txs = HashMap::new();
-                for (from, txs) in tx_groups.clone() {
+                for (from, txs) in tx_groups {
                     let addr_bytes = from.to_vec();
                     let prefix = &addr_bytes[0..4];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
                     let index = num as usize % 2000;
-                    client_txs.entry(index).or_insert_with(Vec::new).extend(txs.clone());
-                    self.queue_count.fetch_add(txs.len(), Ordering::Relaxed);
+                    client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
                 }
 
-                let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
+                let semaphore = Arc::new(Semaphore::new(200));
+
+                for (index, txs) in client_txs {
+                    let permit = semaphore.clone().acquire_owned().await?;
+                    let client = self.client_pool.get_client(index).await?;
                     let sent_count_clone = self.sent_count.clone();
-                    let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
                     let queue_count = self.queue_count.clone();
-                    tokio::spawn(async move{
-                        let client = client_pool_clone.get_client_for_address(&index);
-                        for tx in txs.clone() {
+
+                    tokio::spawn(async move {
+                        for tx in txs {
                             let start_timestamp = SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .expect("time went backwards")
                                 .as_millis();
+
                             let tx_hash = tx.tx_hash();
                             pending_txs_clone.insert(*tx_hash, PendingRunTx {
                                 tx_hash: *tx_hash,
                                 start_timestamp: start_timestamp as usize,
                             });
-                            match client.send_tx_envelope(tx).await {
-                                Ok(_) => {
-                                    sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                                    queue_count.fetch_sub(1, Ordering::Relaxed);
-                                },
-                                Err(e) => {
-                                    eprintln!("Error sending transaction: {:?}", e);
-                                    return;
-                                },
+                                match client.send_tx_envelope(tx.clone()).await {
+                                    Ok(_) => {
+                                        sent_count_clone.fetch_add(1, Ordering::Relaxed);
+                                        queue_count.fetch_sub(1, Ordering::Relaxed);
+                                    }
+                                    Err(e) => {
+                                        log::info!("Error sending transaction after retries: {:?}", e);
+                                }
                             }
-                            sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                            queue_count.fetch_sub(1, Ordering::Relaxed);
                         }
-                    })
-                }).collect();
+                        drop(permit);
+                    });
+                }
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
