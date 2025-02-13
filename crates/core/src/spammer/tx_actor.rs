@@ -39,13 +39,6 @@ pub struct RpcClientPool {
     pool_size: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TxTrackingInfo {
-    address: String,
-    nonce: u64,
-    timestamp: i64,
-}
-
 impl RpcClientPool {
     pub fn new(rpc_url: Url, pool_size: usize) -> Self {
         let clients: Vec<Arc<AnyProvider>> = (0..pool_size)
@@ -111,8 +104,6 @@ struct TxActor<D> where D: DbOps {
     current_second_tx_count: usize,
     current_second_gas_used: u64,
     tps_file: String,
-    tx_tracking_file: String,
-    address_nonces: HashMap<Address, u64>,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -139,15 +130,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             .truncate(true)
             .open(&tps_file)
             .expect("Failed to create TPS file");
-        writeln!(file, "timestamp,tps").expect("Failed to write headers");
-        let tx_tracking_file = format!("tx_tracking_{}.csv", now.format("%Y%m%d_%H%M%S"));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tx_tracking_file)
-            .expect("Failed to create tx tracking file");
-        writeln!(file, "timestamp,address,nonce").expect("Failed to write headers");
+        writeln!(file, "timestamp,tps,gasused").expect("Failed to write headers");
 
         Self {
             receiver,
@@ -164,8 +147,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             current_second_tx_count: 0,
             current_second_gas_used: 0,
             tps_file,
-            tx_tracking_file,
-            address_nonces: HashMap::new(),
         }
     }
 
@@ -176,26 +157,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         {
             writeln!(file, "{},{},{}", timestamp, tps, gas_used)
                 .expect("Failed to write TPS data");
-        }
-    }
-
-    fn write_tx_tracking(&mut self, address: Address, nonce: u64) {
-        if let Ok(mut file) = OpenOptions::new()
-            .append(true)
-            .open(&self.tx_tracking_file)
-        {
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs() as i64;
-
-            writeln!(
-                file,
-                "{},{:#x},{}",
-                timestamp,
-                address,
-                nonce
-            ).expect("Failed to write tx tracking data");
         }
     }
 
@@ -378,9 +339,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
                     let index = num as usize % self.client_pool.pool_size;
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs.clone());
-                    for tx in txs.iter() {
-                        self.write_tx_tracking(from, tx.nonce());
-                    }
                 }
 
                 let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
@@ -482,8 +440,12 @@ impl TxActorHandle {
     }
 
     pub async fn wait_for_confirmations(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut last_count = 0;
+        let mut start_time = None;
+
         loop {
             let (sender, receiver) = oneshot::channel();
+
             self.sender
                 .send(TxActorMessage::CheckConfirmedCount {
                     response: sender,
@@ -496,7 +458,17 @@ impl TxActorHandle {
                 return Ok(());
             }
 
-            // Sleep for a short duration before checking again
+            if unconfirmed_count == last_count {
+                if start_time.is_none() {
+                    start_time = Some(std::time::Instant::now());
+                } else if start_time.unwrap().elapsed().as_secs() >= 3 {
+                    return Ok(());
+                }
+            } else {
+                last_count = unconfirmed_count;
+                start_time = None;
+            }
+
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
     }
