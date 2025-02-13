@@ -23,6 +23,7 @@ use contender_bundle_provider::BundleClient;
 use std::collections::HashMap;
 use std::ops::Mul;
 use std::sync::Arc;
+use log::log;
 
 /// A test scenario can be used to run a test with a specific configuration, database, and RPC provider.
 #[derive(Clone, Debug)]
@@ -449,7 +450,7 @@ where
             }
         }
 
-        println!("Total unique addresses: {}", tx_groups.clone().len());
+        log::info!("Total unique addresses: {}", tx_groups.clone().len());
 
         let callback_handler = callback_handler.clone();
         let tx_handler = self.msg_handle.clone();

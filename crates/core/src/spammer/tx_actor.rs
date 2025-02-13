@@ -4,6 +4,7 @@ use std::fs::OpenOptions;
 use std::sync::{Arc};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use alloy::consensus::{Transaction, TxEnvelope};
 use alloy::network::AnyNetwork;
@@ -98,11 +99,12 @@ struct TxActor<D> where D: DbOps {
     expected_tx_count: usize,
     confirmed_count: usize,
     sent_count: Arc<AtomicUsize>,
+    queue_count: Arc<AtomicUsize>,
     all_run_txs: Vec<RunTx>,
     client_pool: Arc<RpcClientPool>,
     recent_confirmations: Vec<(usize, usize)>,
-    current_batch_tx_count: usize,
-    current_batch_gas_used: u64,
+    current_second_tx_count: usize,
+    current_second_gas_used: u64,
     tps_file: String,
 }
 
@@ -121,7 +123,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 50));
+        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 500));
         let now = Utc::now();
         let tps_file = format!("tps_data_{}.csv", now.format("%Y%m%d_%H%M%S"));
         let mut file = OpenOptions::new()
@@ -141,11 +143,12 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             expected_tx_count,
             confirmed_count: 0,
             sent_count: Arc::new(AtomicUsize::new(0)),
+            queue_count: Arc::new(AtomicUsize::new(0)),
             all_run_txs: Vec::new(),
             client_pool,
             recent_confirmations: Vec::new(),
-            current_batch_tx_count: 0,
-            current_batch_gas_used: 0,
+            current_second_tx_count: 0,
+            current_second_gas_used: 0,
             tps_file,
         }
     }
@@ -161,27 +164,23 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     }
 
     fn calculate_realtime_tps(&mut self, current_timestamp: usize) -> f64 {
-        // Remove confirmations older than 15 seconds
-        let window_start = current_timestamp.saturating_sub(1000); // 15 seconds in milliseconds
+        let window_start = current_timestamp.saturating_sub(1000);
         self.recent_confirmations.retain(|(ts, _)| *ts >= window_start);
 
-        // Calculate total confirmations in the window
         let total_confirmations: usize = self.recent_confirmations.iter()
             .map(|(_, count)| count)
             .sum();
 
-        // Calculate actual window duration (might be less than 15s at the start)
         let window_duration = if self.recent_confirmations.is_empty() {
-            1.0 // default to 15s if no data
+            1.0
         } else {
             let oldest_ts = self.recent_confirmations.first()
                 .map(|(ts, _)| *ts)
                 .unwrap_or(current_timestamp);
             let duration_ms = (current_timestamp - oldest_ts) as f64;
-            duration_ms / 1000.0 // convert to seconds
+            duration_ms / 1000.0
         };
 
-        // Calculate TPS
         if window_duration > 0.0 {
             total_confirmations as f64 / window_duration
         } else {
@@ -295,8 +294,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
 
                         if !new_confirmed_txs.is_empty() {
-                            self.current_batch_tx_count += new_confirmed_txs.len();
-                            self.current_batch_gas_used += gas_used;
+                            self.current_second_tx_count += new_confirmed_txs.len();
+                            self.current_second_gas_used += gas_used;
                             self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
                             log::info!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
                                      new_confirmed_txs.len(), transactions.len(), fragment_index,
@@ -331,10 +330,13 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             TxActorMessage::SentRunTx {
                 tx_groups,
             } => {
-                let start_time = std::time::Instant::now();
 
+                let queue_num = self.sent_count.load(Ordering::Relaxed);
+                if queue_num != 0 {
+                    log::warn!("There are {} txs not send to client", queue_num);
+                }
                 let mut client_txs = HashMap::new();
-                for (from, txs) in tx_groups {
+                for (from, txs) in tx_groups.clone() {
                     let addr_bytes = from.to_vec();
                     let prefix = &addr_bytes[0..4];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
@@ -342,13 +344,15 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs.clone());
                 }
 
+                self.queue_count.fetch_add(tx_groups.len(), Ordering::Relaxed);
                 let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
-                    tokio::spawn(async move {
+                    let queue_count = self.queue_count.clone();
+                    tokio::spawn(async move{
                         let client = client_pool_clone.get_client_for_address(&index);
-                        for tx in txs {
+                        for tx in txs.clone() {
                             let start_timestamp = SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .expect("time went backwards")
@@ -360,27 +364,10 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             });
                             let _ = client.send_tx_envelope(tx).await;
                             sent_count_clone.fetch_add(1, Ordering::Relaxed);
+                            queue_count.fetch_sub(txs.len(), Ordering::Relaxed);
                         }
                     })
                 }).collect();
-
-                for task in tasks {
-                    task.await?;
-                }
-
-                let elapsed = start_time.elapsed();
-                log::info!("Transaction batch sent in {:?}", elapsed);
-
-                let current_timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs() as i64;
-                self.write_tps_to_file(current_timestamp, self.current_batch_tx_count, self.current_batch_gas_used);
-                self.current_batch_tx_count = 0;
-                self.current_batch_gas_used = 0;
-                if !self.all_run_txs.is_empty() {
-                    self.print_stats();
-                }
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
@@ -392,8 +379,21 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
+                _ = interval.tick() => {
+                    let current_timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs() as i64;
+                    self.write_tps_to_file(current_timestamp, self.current_second_tx_count, self.current_second_gas_used);
+                    self.current_second_tx_count = 0;
+                    self.current_second_gas_used = 0;
+                    if !self.all_run_txs.is_empty() {
+                        self.print_stats();
+                    }
+                }
                 Some(msg) = self.receiver.recv() => {
                     self.handle_message(msg).await?;
                 }
