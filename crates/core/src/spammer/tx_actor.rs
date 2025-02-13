@@ -101,8 +101,8 @@ struct TxActor<D> where D: DbOps {
     all_run_txs: Vec<RunTx>,
     client_pool: Arc<RpcClientPool>,
     recent_confirmations: Vec<(usize, usize)>,
-    current_second_tx_count: usize,
-    current_second_gas_used: u64,
+    current_batch_tx_count: usize,
+    current_batch_gas_used: u64,
     tps_file: String,
 }
 
@@ -144,8 +144,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             all_run_txs: Vec::new(),
             client_pool,
             recent_confirmations: Vec::new(),
-            current_second_tx_count: 0,
-            current_second_gas_used: 0,
+            current_batch_tx_count: 0,
+            current_batch_gas_used: 0,
             tps_file,
         }
     }
@@ -295,8 +295,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
 
                         if !new_confirmed_txs.is_empty() {
-                            self.current_second_tx_count += new_confirmed_txs.len();
-                            self.current_second_gas_used += gas_used;
+                            self.current_batch_tx_count += new_confirmed_txs.len();
+                            self.current_batch_gas_used += gas_used;
                             self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
                             log::info!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
                                      new_confirmed_txs.len(), transactions.len(), fragment_index,
@@ -323,7 +323,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         }
         Ok(false)
     }
-     async fn handle_message(
+    async fn handle_message(
         &mut self,
         message: TxActorMessage,
     ) -> Result<(), Box<dyn Error>> {
@@ -331,6 +331,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             TxActorMessage::SentRunTx {
                 tx_groups,
             } => {
+                let start_time = std::time::Instant::now();
 
                 let mut client_txs = HashMap::new();
                 for (from, txs) in tx_groups {
@@ -362,6 +363,24 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
                     })
                 }).collect();
+
+                for task in tasks {
+                    task.await?;
+                }
+
+                let elapsed = start_time.elapsed();
+                log::info!("Transaction batch sent in {:?}", elapsed);
+
+                let current_timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs() as i64;
+                self.write_tps_to_file(current_timestamp, self.current_batch_tx_count, self.current_batch_gas_used);
+                self.current_batch_tx_count = 0;
+                self.current_batch_gas_used = 0;
+                if !self.all_run_txs.is_empty() {
+                    self.print_stats();
+                }
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
@@ -373,21 +392,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
-                _ = interval.tick() => {
-                    let current_timestamp = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs() as i64;
-                    self.write_tps_to_file(current_timestamp, self.current_second_tx_count, self.current_second_gas_used);
-                    self.current_second_tx_count = 0;
-                    self.current_second_gas_used = 0;
-                    if !self.all_run_txs.is_empty() {
-                        self.print_stats();
-                    }
-                }
                 Some(msg) = self.receiver.recv() => {
                     self.handle_message(msg).await?;
                 }

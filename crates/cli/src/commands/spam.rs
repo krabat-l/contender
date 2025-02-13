@@ -124,14 +124,18 @@ pub async fn spam(
     // }
 
     log::info!("funding accounts...");
-    fund_accounts(
-        &all_signer_addrs,
-        &user_signers[0],
-        &rpc_client,
-        &eth_client,
-        min_balance,
-    )
-    .await?;
+    if min_balance != U256::from(0) {
+        fund_accounts(
+            &all_signer_addrs,
+            &user_signers[0],
+            &rpc_client,
+            &eth_client,
+            min_balance,
+        )
+            .await?;
+
+    }
+
 
     let expected_tx_count = args.txs_per_second.unwrap_or(0) * duration;
     let timestamp = std::time::SystemTime::now()
@@ -158,7 +162,7 @@ pub async fn spam(
     log::info!("calculate spam cost...");
     let total_cost =
         get_max_spam_cost(scenario.to_owned(), &rpc_client).await? * U256::from(duration);
-    if min_balance > U256::from(1) && min_balance < U256::from(total_cost) {
+    if min_balance < U256::from(total_cost) {
         return Err(ContenderError::SpamError(
             "min_balance is not enough to cover the cost of the spam transactions",
             format!(
