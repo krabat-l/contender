@@ -158,7 +158,7 @@ pub async fn spam(
     log::info!("calculate spam cost...");
     let total_cost =
         get_max_spam_cost(scenario.to_owned(), &rpc_client).await? * U256::from(duration);
-    if min_balance < U256::from(total_cost) {
+    if min_balance > U256::from(0) && min_balance < U256::from(total_cost) {
         return Err(ContenderError::SpamError(
             "min_balance is not enough to cover the cost of the spam transactions",
             format!(

@@ -237,7 +237,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         let confirmed_count = self.confirmed_count;
         let queued_on_chain_count = sent_count - confirmed_count;
         let queued_count = self.pending_txs.len();
-        log::info!("\nTransaction Latency Statistics:");
+        log::info!("Transaction Latency Statistics:");
         log::info!("--------------------------------");
         log::info!("Sent: {}", sent_count);
         log::info!("Confirmed: {}", confirmed_count);
@@ -253,7 +253,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         log::info!("Max Latency: {} ms", max);
         log::info!("Overall Throughput: {:.2} tx/s", throughput);
         log::info!("Realtime TPS (15s): {:.2} tx/s", realtime_tps);
-        log::info!("--------------------------------\n");
+        log::info!("--------------------------------");
     }
 
     async fn process_ws_message(&mut self, text: String) -> Result<bool, Box<dyn Error>> {
