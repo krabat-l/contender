@@ -356,7 +356,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 tx_hash: *tx_hash,
                                 start_timestamp: start_timestamp as usize,
                             });
-                            let _ = client.send_tx_envelope(tx).await;
+                            let _ = client.send_tx_envelope(tx);
                             sent_count_clone.fetch_add(1, Ordering::Relaxed);
                         }
                     })
