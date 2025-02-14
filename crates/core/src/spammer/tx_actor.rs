@@ -32,6 +32,7 @@ use futures::SinkExt;
 use futures::stream::SplitStream;
 use reqwest::Client;
 use serde_json::Value;
+use tokio::time::Instant;
 use crate::generator::types::AnyProvider;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -59,7 +60,7 @@ impl RpcClientPool {
                     RpcClient::new(
                         Http::with_client(
                             Client::builder()
-                                .pool_max_idle_per_host(5000)
+                                .pool_max_idle_per_host(2000)
                                 .pool_idle_timeout(Some(std::time::Duration::from_secs(500)))
                                 .http2_keep_alive_interval(Some(std::time::Duration::from_secs(500)))
                                 .http2_keep_alive_while_idle(true)
@@ -76,7 +77,7 @@ impl RpcClientPool {
         Self {
             clients,
             pool_size,
-            connection_semaphore: Arc::new(Semaphore::new(5000)),
+            connection_semaphore: Arc::new(Semaphore::new(2000)),
         }
     }
 
@@ -334,7 +335,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
 
                             if let Some(run_id) = self.run_id {
                                 self.all_run_txs.extend(new_confirmed_txs.clone());
-                                self.db.insert_run_txs(run_id, new_confirmed_txs.clone())?;
+                                // self.db.insert_run_txs(run_id, new_confirmed_txs.clone())?;
                                 self.confirmed_count += new_confirmed_txs.len();
 
                                 if self.confirmed_count >= self.expected_tx_count {
@@ -360,21 +361,24 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                 tx_groups,
             } => {
 
+                let start_time = Instant::now();
                 let mut client_txs = HashMap::new();
                 for (from, txs) in tx_groups {
                     let addr_bytes = from.to_vec();
                     let prefix = &addr_bytes[0..4];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
-                    let index = num as usize % 5000;
+                    let index = num as usize % 2000;
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
                 }
 
-                let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
+                let mut handles = vec![];
+
+                let _ = client_txs.into_iter().map(|(index, txs)| {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
 
-                    thread::spawn(move || {
+                    let handle = thread::spawn(move || {
                         for tx in txs {
                             let start_timestamp = SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -396,10 +400,14 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                     }
                                 }
                             });
-
                         }
-                    })
+                    });
+                    handles.push(handle);
+                });
+                let results: Vec<_> = handles.into_iter().map(|handle| {
+                    handle.join().unwrap()
                 }).collect();
+                log::info!("Sent tun txs in {} ms", start_time.elapsed().as_millis());
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
