@@ -1283,6 +1283,7 @@ name = "contender_core"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "alloy-rpc-client",
  "async-trait",
  "async-tungstenite",
  "chrono",
@@ -1294,7 +1295,6 @@ dependencies = [
  "reqwest 0.12.12",
  "serde",
  "serde_json",
- "threadpool",
  "tokio",
  "url",
  "web3",

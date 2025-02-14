@@ -336,7 +336,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let addr_bytes = from.to_vec();
                     let prefix = &addr_bytes[0..4];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
-                    let index = num as usize % self.client_pool.pool_size;
+                    let index = num as usize % (self.client_pool.pool_size * 4);
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
                 }
 
@@ -356,8 +356,15 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 tx_hash: *tx_hash,
                                 start_timestamp: start_timestamp as usize,
                             });
-                            let _ = client.send_tx_envelope(tx);
-                            sent_count_clone.fetch_add(1, Ordering::Relaxed);
+                            let response = client.send_tx_envelope(tx).await;
+                            match response {
+                                Ok(_) => {
+                                    sent_count_clone.fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(e) => {
+                                    println!("Failed to send tx: {}", e);
+                                }
+                            }
                         }
                     })
                 }).collect();
