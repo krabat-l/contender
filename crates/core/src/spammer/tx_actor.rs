@@ -52,12 +52,17 @@ impl RpcClientPool {
         let clients: Vec<Arc<AnyProvider>> = (0..pool_size)
             .map(|_| {
                 let client =
-                        RpcClient::new(Http::with_client(Client::builder()
-                       .pool_max_idle_per_host(100)
-                       .pool_idle_timeout(Some(std::time::Duration::from_secs(5)))
-                       .build()
-                       .expect("Failed to create reqwest client"), rpc_url.clone()), is_local);
-                Arc::new(
+                    RpcClient::new(
+                        Http::with_client(
+                            Client::builder()
+                                .pool_max_idle_per_host(100)
+                                .pool_idle_timeout(Some(std::time::Duration::from_secs(500)))
+                                .http2_keep_alive_interval(Some(std::time::Duration::from_secs(500)))
+                                .http2_keep_alive_while_idle(true)
+                                .http2_initial_stream_window_size(655350)
+                                .build()
+                                .expect("Failed to create reqwest client"), rpc_url.clone()), is_local);
+            Arc::new(
                     ProviderBuilder::new()
                         .network::<AnyNetwork>()
                         .on_client(client),
