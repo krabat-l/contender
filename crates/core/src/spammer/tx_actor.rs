@@ -77,7 +77,7 @@ impl RpcClientPool {
         Self {
             clients,
             pool_size,
-            connection_semaphore: Arc::new(Semaphore::new(5000)),
+            connection_semaphore: Arc::new(Semaphore::new(20000)),
         }
     }
 
@@ -361,7 +361,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             TxActorMessage::SentRunTx {
                 tx_groups,
             } => {
-                log::info!("sending txs");
                 let start_time = Instant::now();
 
                 let tasks: Vec<_> = tx_groups.into_iter().enumerate().map(|(index, (addr, txs))| {
@@ -370,7 +369,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let pending_txs_clone = self.pending_txs.clone();
 
                     tokio::spawn(async move {
-                        log::info!("txs len: {}", txs.len());
                         for tx in txs {
                             let start_timestamp = SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -395,12 +393,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     })
                 }).collect();
 
-
-                for task in tasks {
-                    let _ = task.await;
-                }
-
-                log::info!("Sent batch txs in {} ms", start_time.elapsed().as_millis());
 
             }
             TxActorMessage::CheckConfirmedCount { response } => {
