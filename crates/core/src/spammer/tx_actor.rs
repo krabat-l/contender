@@ -103,7 +103,6 @@ struct TxActor<D> where D: DbOps {
     all_run_txs: Vec<RunTx>,
     client_pool: Arc<RpcClientPool>,
     recent_confirmations: Vec<(usize, usize)>,
-    tps_file: String,
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -137,7 +136,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             all_run_txs: Vec::new(),
             client_pool,
             recent_confirmations: Vec::new(),
-            tps_file,
         }
     }
 
@@ -372,20 +370,17 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        tokio::spawn(async move {
-            while let Some(Ok(message)) = self.read.next().await {
-                if let async_tungstenite::tungstenite::Message::Text(text) = message {
-                    if let Err(e) = self.process_ws_message(text).await {
-                        log::error!("Failed to process WS message: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
         loop {
             tokio::select! {
                 Some(msg) = self.receiver.recv() => {
                     self.handle_message(msg).await?;
+                }
+                Some(Ok(message)) = self.read.next() => {
+                    if let async_tungstenite::tungstenite::Message::Text(text) = message {
+                        if self.process_ws_message(text).await? {
+                            break;
+                        }
+                    }
                 }
                 else => break,
             }
