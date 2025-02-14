@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::OpenOptions;
@@ -45,7 +44,6 @@ pub struct RpcClientPool {
     pool_size: usize,
     connection_semaphore: Arc<Semaphore>,
 }
-
 impl RpcClientPool {
     pub fn new(rpc_url: Url, pool_size: usize) -> Self {
         fn _guess_local_url(url: &str) -> bool {
@@ -77,7 +75,7 @@ impl RpcClientPool {
         Self {
             clients,
             pool_size,
-            connection_semaphore: Arc::new(Semaphore::new(20000)),
+            connection_semaphore: Arc::new(Semaphore::new(5000)),
         }
     }
 
@@ -267,7 +265,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         let confirmed_count = self.confirmed_count;
         let queued_on_chain_count = sent_count - confirmed_count;
         let queued_count = self.pending_txs.len();
-        log::info!("Transaction Latency Statistics:");
+        log::info!("\nTransaction Latency Statistics:");
         log::info!("--------------------------------");
         log::info!("Sent: {}", sent_count);
         log::info!("Confirmed: {}", confirmed_count);
@@ -283,6 +281,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         log::info!("Max Latency: {} ms", max);
         log::info!("Overall Throughput: {:.2} tx/s", throughput);
         log::info!("Realtime TPS (15s): {:.2} tx/s", realtime_tps);
+        log::info!("--------------------------------\n");
     }
 
     async fn process_ws_message(&mut self, text: String) -> Result<bool, Box<dyn Error>> {
@@ -327,15 +326,15 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             self.current_second_tx_count += new_confirmed_txs.len();
                             self.current_second_gas_used += gas_used;
                             self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
-                            // log::info!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
-                            //          new_confirmed_txs.len(), transactions.len(), fragment_index,
-                            //          block_number, gas_used, tx_offset as usize + transactions.len(),
-                            //          self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len(),
-                            //          self.expected_tx_count);
+                            log::info!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
+                                     new_confirmed_txs.len(), transactions.len(), fragment_index,
+                                     block_number, gas_used, tx_offset as usize + transactions.len(),
+                                     self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len(),
+                                     self.expected_tx_count);
 
                             if let Some(run_id) = self.run_id {
                                 self.all_run_txs.extend(new_confirmed_txs.clone());
-                                // self.db.insert_run_txs(run_id, new_confirmed_txs.clone())?;
+                                self.db.insert_run_txs(run_id, new_confirmed_txs.clone())?;
                                 self.confirmed_count += new_confirmed_txs.len();
 
                                 if self.confirmed_count >= self.expected_tx_count {
@@ -352,7 +351,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         }
         Ok(false)
     }
-
     async fn handle_message(
         &mut self,
         message: TxActorMessage,
@@ -361,13 +359,20 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             TxActorMessage::SentRunTx {
                 tx_groups,
             } => {
-                let start_time = Instant::now();
 
-                let tasks: Vec<_> = tx_groups.into_iter().enumerate().map(|(index, (addr, txs))| {
+                let mut client_txs = HashMap::new();
+                for (from, txs) in tx_groups {
+                    let addr_bytes = from.to_vec();
+                    let prefix = &addr_bytes[0..4];
+                    let num = u32::from_be_bytes(prefix.try_into().unwrap());
+                    let index = num as usize % 5000;
+                    client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
+                }
+
+                let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
-
                     tokio::spawn(async move {
                         for tx in txs {
                             let start_timestamp = SystemTime::now()
@@ -392,8 +397,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
                     })
                 }).collect();
-
-
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
