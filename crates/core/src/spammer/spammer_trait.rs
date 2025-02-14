@@ -91,8 +91,8 @@ where
                 log::info!("[{}] end send txs, current datetime: {}", tick, chrono::Local::now().to_string());
 
                 let elapsed = start_time.elapsed();
-                if elapsed < std::time::Duration::from_secs(1) {
-                    tokio::time::sleep(std::time::Duration::from_secs(1) - elapsed).await;
+                if elapsed < std::time::Duration::from_millis(300) {
+                    tokio::time::sleep(std::time::Duration::from_secs(300) - elapsed).await;
                 }
 
                 tick += 1;

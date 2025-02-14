@@ -346,15 +346,13 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                     return;
                                 },
                             }
-                            sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                            queue_count.fetch_sub(1, Ordering::Relaxed);
                         }
                     })
                 }).collect();
 
-                for task in tasks {
-                    task.await.unwrap();
-                }
+                // for task in tasks {
+                //     task.await.unwrap();
+                // }
 
                 if !self.all_run_txs.is_empty() {
                     self.print_stats();
