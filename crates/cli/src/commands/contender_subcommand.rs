@@ -87,7 +87,7 @@ May be specified multiple times."
         #[arg(
             long,
             long_help = "The minimum balance to check for each private key in decimal-ETH format (`--min-balance 1.5` means 1.5 * 1e18 wei).",
-            default_value = "0"
+            default_value = "1.0"
         )]
         min_balance: String,
 

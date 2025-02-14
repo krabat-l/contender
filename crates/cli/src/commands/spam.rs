@@ -17,7 +17,6 @@ use contender_core::{
     spammer::{ExecutionPayload, Spammer, TimedSpammer},
     test_scenario::TestScenario,
 };
-use contender_core::generator::named_txs::ExecutionRequest;
 use contender_testfile::TestConfig;
 
 use crate::util::{
@@ -123,19 +122,15 @@ pub async fn spam(
     //     panic!("Must set either --txs-per-block (--tpb) or --txs-per-second (--tps)");
     // }
 
-    log::info!("funding accounts...");
-    if min_balance != U256::from(0) {
-        fund_accounts(
-            &all_signer_addrs,
-            &user_signers[0],
-            &rpc_client,
-            &eth_client,
-            min_balance,
-        )
-            .await?;
-
-    }
-
+    println!("funding accounts...");
+    fund_accounts(
+        &all_signer_addrs,
+        &user_signers[0],
+        &rpc_client,
+        &eth_client,
+        min_balance,
+    )
+    .await?;
 
     let expected_tx_count = args.txs_per_second.unwrap_or(0) * duration;
     let timestamp = std::time::SystemTime::now()
@@ -241,7 +236,7 @@ async fn get_max_spam_cost<D: DbOps + Send + Sync + 'static, S: Seeder + Send + 
     let mut prepared_sample_txs = vec![];
     for tx in sample_txs {
         let tx_req = tx.tx;
-        let (prepared_req, _signer) = scenario.prepare_tx_request(&tx_req, gas_price, 0).await?;
+        let (prepared_req, _signer) = scenario.prepare_tx_request(&tx_req, gas_price).await?;
         println!(
             "tx_request gas={:?} gas_price={:?} ({:?}, {:?})",
             prepared_req.gas,
