@@ -58,7 +58,7 @@ impl RpcClientPool {
                     RpcClient::new(
                         Http::with_client(
                             Client::builder()
-                                .pool_max_idle_per_host(2000)
+                                .pool_max_idle_per_host(5000)
                                 .pool_idle_timeout(Some(std::time::Duration::from_secs(500)))
                                 .http2_keep_alive_interval(Some(std::time::Duration::from_secs(500)))
                                 .http2_keep_alive_while_idle(true)
@@ -75,7 +75,7 @@ impl RpcClientPool {
         Self {
             clients,
             pool_size,
-            connection_semaphore: Arc::new(Semaphore::new(2000)),
+            connection_semaphore: Arc::new(Semaphore::new(5000)),
         }
     }
 
@@ -326,11 +326,11 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                             self.current_second_tx_count += new_confirmed_txs.len();
                             self.current_second_gas_used += gas_used;
                             self.recent_confirmations.push((timestamp_ms, new_confirmed_txs.len()));
-                            println!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
-                                     new_confirmed_txs.len(), transactions.len(), fragment_index,
-                                     block_number, gas_used, tx_offset as usize + transactions.len(),
-                                     self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len(),
-                                     self.expected_tx_count);
+                            // println!("confirmed {}/{} txs at fragment {}, block {}, gas_used: {}, current block tx count: {}, remaining: {}/{}",
+                            //          new_confirmed_txs.len(), transactions.len(), fragment_index,
+                            //          block_number, gas_used, tx_offset as usize + transactions.len(),
+                            //          self.expected_tx_count - self.confirmed_count - new_confirmed_txs.len(),
+                            //          self.expected_tx_count);
 
                             if let Some(run_id) = self.run_id {
                                 self.all_run_txs.extend(new_confirmed_txs.clone());
@@ -365,7 +365,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let addr_bytes = from.to_vec();
                     let prefix = &addr_bytes[0..4];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
-                    let index = num as usize % 2000;
+                    let index = num as usize % 5000;
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
                 }
 
@@ -399,7 +399,6 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     })
                 }).collect();
 
-                // 等待所有任务完成
                 for task in tasks {
                     let _ = task.await;
                 }
