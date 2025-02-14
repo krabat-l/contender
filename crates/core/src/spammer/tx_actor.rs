@@ -372,15 +372,12 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
                 }
 
-                let mut handles = vec![];
-
-                client_txs.into_iter().for_each(|(index, txs)| {
+                let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
 
-                    let handle = thread::spawn(move || {
-                        let rt = tokio::runtime::Runtime::new().unwrap();
+                    tokio::spawn(async move {
                         for tx in txs {
                             let start_timestamp = SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -391,25 +388,25 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 tx_hash: *tx_hash,
                                 start_timestamp: start_timestamp as usize,
                             });
-                            rt.block_on(async {
-                                let response = client_pool_clone.send_tx_envelope(index, tx).await;
-                                match response {
-                                    Ok(_) => {
-                                        sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                    Err(e) => {
-                                        log::info!("Failed to send tx: {}", e);
-                                    }
+
+                            let response = client_pool_clone.send_tx_envelope(index, tx).await;
+                            match response {
+                                Ok(_) => {
+                                    sent_count_clone.fetch_add(1, Ordering::Relaxed);
                                 }
-                            });
+                                Err(e) => {
+                                    println!("Failed to send tx: {}", e);
+                                }
+                            }
                         }
-                    });
-                    handles.push(handle);
-                });
-                let results: Vec<_> = handles.into_iter().map(|handle| {
-                    handle.join().unwrap()
+                    })
                 }).collect();
+
                 log::info!("Sent batch txs in {} ms", start_time.elapsed().as_millis());
+
+                for task in tasks {
+                    let _ = task.await;
+                }
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {

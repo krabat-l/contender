@@ -206,7 +206,7 @@ pub async fn spam(
 
     // trigger timed spammer
     let tps = args.txs_per_second.unwrap_or(10);
-    println!("Timed spamming with {} txs per second", tps);
+    log::info!("Timed spamming with {} txs per second", tps);
     let interval = std::time::Duration::from_secs(1);
     let spammer = TimedSpammer::new(interval);
     match spam_callback_default(!args.disable_reports, Arc::new(rpc_client).into()).await {
