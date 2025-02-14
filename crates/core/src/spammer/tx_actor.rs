@@ -1,3 +1,4 @@
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::OpenOptions;
@@ -8,14 +9,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use alloy::consensus::TxEnvelope;
 use alloy::eips::eip2718::Encodable2718;
 use alloy::network::AnyNetwork;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use dashmap::DashMap;
 use web3::{
     futures::StreamExt,
 };
 use serde::{Deserialize, Serialize};
 use alloy::primitives::{Address, TxHash};
-use alloy::providers::{Provider, ProviderBuilder};
+use alloy::providers::{PendingTransactionBuilder, Provider, ProviderBuilder};
 use alloy::transports::http::Http;
 use alloy_rpc_client::RpcClient;
 use url::Url;
@@ -40,7 +41,9 @@ pub struct TransactionSigned {
 pub struct RpcClientPool {
     clients: Vec<Arc<AnyProvider>>,
     pool_size: usize,
+    connection_semaphore: Arc<Semaphore>,
 }
+
 impl RpcClientPool {
     pub fn new(rpc_url: Url, pool_size: usize) -> Self {
         fn _guess_local_url(url: &str) -> bool {
@@ -55,14 +58,14 @@ impl RpcClientPool {
                     RpcClient::new(
                         Http::with_client(
                             Client::builder()
-                                .pool_max_idle_per_host(100)
+                                .pool_max_idle_per_host(2000)
                                 .pool_idle_timeout(Some(std::time::Duration::from_secs(500)))
                                 .http2_keep_alive_interval(Some(std::time::Duration::from_secs(500)))
                                 .http2_keep_alive_while_idle(true)
                                 .http2_initial_stream_window_size(655350)
                                 .build()
                                 .expect("Failed to create reqwest client"), rpc_url.clone()), is_local);
-            Arc::new(
+                Arc::new(
                     ProviderBuilder::new()
                         .network::<AnyNetwork>()
                         .on_client(client),
@@ -72,7 +75,19 @@ impl RpcClientPool {
         Self {
             clients,
             pool_size,
+            connection_semaphore: Arc::new(Semaphore::new(2000)),
         }
+    }
+
+    pub async fn send_tx_envelope(
+        &self,
+        index: usize,
+        tx: TxEnvelope,
+    ) -> Result<PendingTransactionBuilder<'_, Http<Client>, AnyNetwork>, Box<dyn Error + Send + Sync>> {
+        let permit = self.connection_semaphore.acquire().await?;
+        let result = self.clients[index % self.pool_size].send_tx_envelope(tx).await;
+        drop(permit);
+        result.map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
     }
 }
 
@@ -134,7 +149,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 20));
+        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 1));
         let now = Utc::now();
         let tps_file = format!("tps_data_{}.csv", now.format("%Y%m%d_%H%M%S"));
         let mut file = OpenOptions::new()
@@ -336,7 +351,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         }
         Ok(false)
     }
-     async fn handle_message(
+    async fn handle_message(
         &mut self,
         message: TxActorMessage,
     ) -> Result<(), Box<dyn Error>> {
@@ -358,7 +373,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
-                    let pool_size = client_pool_clone.pool_size;
+
                     tokio::spawn(async move {
                         for tx in txs {
                             let start_timestamp = SystemTime::now()
@@ -370,7 +385,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 tx_hash: *tx_hash,
                                 start_timestamp: start_timestamp as usize,
                             });
-                            let response = client_pool_clone.clients[index % pool_size].send_tx_envelope(tx).await;
+
+                            let response = client_pool_clone.send_tx_envelope(index, tx).await;
                             match response {
                                 Ok(_) => {
                                     sent_count_clone.fetch_add(1, Ordering::Relaxed);
@@ -382,6 +398,11 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                         }
                     })
                 }).collect();
+
+                // 等待所有任务完成
+                for task in tasks {
+                    let _ = task.await;
+                }
             }
             TxActorMessage::CheckConfirmedCount { response } => {
                 response.send(self.expected_tx_count - self.confirmed_count).map_err(|_| {
