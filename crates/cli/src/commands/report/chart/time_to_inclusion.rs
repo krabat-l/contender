@@ -71,7 +71,7 @@ impl TimeToInclusionChart {
 
         root.present()?;
 
-        println!("saved chart to {}", filepath.as_ref());
+        log::info!("saved chart to {}", filepath.as_ref());
         Ok(())
     }
 }

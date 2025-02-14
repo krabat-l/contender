@@ -9,9 +9,9 @@ pub async fn drop_db(db_path: &str) -> Result<()> {
         fs::remove_file(db_path).map_err(|e| {
             ContenderError::DbError("Failed to delete database file", Some(e.to_string()))
         })?;
-        println!("Database file '{}' has been deleted.", db_path);
+        log::info!("Database file '{}' has been deleted.", db_path);
     } else {
-        println!("Database file '{}' does not exist.", db_path);
+        log::info!("Database file '{}' does not exist.", db_path);
     }
     Ok(())
 }
@@ -26,7 +26,7 @@ pub async fn reset_db(db_path: &str) -> Result<()> {
 
     // Recreate tables
     db.create_tables()?;
-    println!("Database has been reset and tables recreated.");
+    log::info!("Database has been reset and tables recreated.");
     Ok(())
 }
 
@@ -43,7 +43,7 @@ pub async fn export_db(src_path: &str, target_path: PathBuf) -> Result<()> {
     // Copy the database file to the target location
     fs::copy(src_path, &target_path)
         .map_err(|e| ContenderError::DbError("Failed to export database", Some(e.to_string())))?;
-    println!("Database exported to '{}'", target_path.display());
+    log::info!("Database exported to '{}'", target_path.display());
     Ok(())
 }
 
@@ -62,7 +62,7 @@ pub async fn import_db(src_path: PathBuf, target_path: &str) -> Result<()> {
         let backup_path = format!("{}.backup", target_path);
         fs::copy(target_path, &backup_path)
             .map_err(|e| ContenderError::DbError("Failed to create backup", Some(e.to_string())))?;
-        println!(
+        log::info!(
             "Created backup of existing database at '{}.backup'",
             target_path
         );
@@ -71,7 +71,7 @@ pub async fn import_db(src_path: PathBuf, target_path: &str) -> Result<()> {
     // Copy the source database to the target location
     fs::copy(&src_path, target_path)
         .map_err(|e| ContenderError::DbError("Failed to import database", Some(e.to_string())))?;
-    println!("Database imported from '{}'", src_path.display());
+    log::info!("Database imported from '{}'", src_path.display());
     Ok(())
 }
 

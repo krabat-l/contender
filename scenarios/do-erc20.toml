@@ -1,0 +1,13 @@
+### SPAM
+
+[[spam]]
+
+[spam.tx]
+kind = "transfer_testERC20"
+to = "{testERC20}"
+from_pool = "spammers"
+signature = "function transfer(address to, uint256 value) public returns (bool)"
+args = [
+     "0x1234567890123456789012345678901234567890",
+     "1000000000000000"
+]

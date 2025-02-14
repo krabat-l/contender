@@ -22,6 +22,7 @@ use contender_bundle_provider::bundle_provider::new_basic_bundle;
 use contender_bundle_provider::BundleClient;
 use std::collections::HashMap;
 use std::sync::Arc;
+use log::log;
 
 /// A test scenario can be used to run a test with a specific configuration, database, and RPC provider.
 #[derive(Clone, Debug)]
@@ -81,7 +82,7 @@ where
             wallet_map.insert(addr, wallet);
         }
         for (name, signers) in agent_store.all_agents() {
-            println!("adding '{}' signers to wallet map", name);
+            log::info!("adding '{}' signers to wallet map", name);
             for signer in signers.signers.iter() {
                 wallet_map.insert(signer.address(), EthereumWallet::new(signer.clone()));
             }
@@ -172,7 +173,7 @@ where
                 .wallet(wallet_conf)
                 .on_http(self.rpc_url.to_owned());
 
-            println!(
+            log::info!(
                 "deploying contract: {:?}",
                 tx_req.name.as_ref().unwrap_or(&"".to_string())
             );
@@ -212,7 +213,7 @@ where
                 let res =
                     res.expect("this will never happen. If it does, I'm a terrible programmer.");
                 let receipt = res.get_receipt().await.expect("failed to get receipt");
-                println!(
+                log::info!(
                     "contract address: {}",
                     receipt.contract_address.unwrap_or_default()
                 );
@@ -238,7 +239,7 @@ where
     pub async fn run_setup(&mut self) -> Result<()> {
         self.load_txs(PlanType::Setup(|tx_req| {
             /* callback */
-            println!("{}", self.format_setup_log(&tx_req));
+            log::info!("{}", self.format_setup_log(&tx_req));
 
             // First, extract and clone all the data we need from tx_req
             let from = match tx_req.tx.from {
@@ -289,12 +290,12 @@ where
                     panic!("Failed to get balance for address {:?}: {:?}", from, e)
                 });
 
-                println!("Account balance check for tx '{}':", tx_label);
-                println!("  Address: {:?}", from);
-                println!("  Current balance: {} wei", balance);
-                println!("  Gas price: {} wei", gas_price);
-                println!("  Gas limit: {}", gas_limit);
-                println!("  Transfer value: {} wei", value);
+                log::info!("Account balance check for tx '{}':", tx_label);
+                log::info!("  Address: {:?}", from);
+                log::info!("  Current balance: {} wei", balance);
+                log::info!("  Gas price: {} wei", gas_price);
+                log::info!("  Gas limit: {}", gas_limit);
+                log::info!("  Transfer value: {} wei", value);
 
                 let chain_id = wallet.get_chain_id().await.expect("failed to get chain id");
                 let tx = tx
@@ -415,7 +416,7 @@ where
                             .await
                             .map_err(|e| ContenderError::with_err(e, "failed to prepare tx"))?;
 
-                        println!("bundle tx from {:?}", tx_req.from);
+                        log::info!("bundle tx from {:?}", tx_req.from);
                         // sign tx
                         let tx_envelope = tx_req.build(&signer).await.map_err(|e| {
                             ContenderError::with_err(e, "bad request: failed to build tx")
@@ -490,7 +491,7 @@ where
             }
         }
 
-        println!("Total unique addresses: {}", tx_groups.clone().len());
+        log::info!("Total unique addresses: {}", tx_groups.clone().len());
 
         let callback_handler = callback_handler.clone();
         let tx_handler = self.msg_handle.clone();

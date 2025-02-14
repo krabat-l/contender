@@ -116,9 +116,9 @@ mod tests {
     fn encodes_seed_bytes() {
         let mut seed_bytes = [0u8; 32];
         seed_bytes[seed_bytes.len() - 1] = 0x01;
-        println!("{}", seed_bytes.encode_hex());
+        log::info!("{}", seed_bytes.encode_hex());
         let seed = super::RandSeed::seed_from_bytes(&seed_bytes);
-        println!("{}", seed.as_bytes().encode_hex());
+        log::info!("{}", seed.as_bytes().encode_hex());
         assert_eq!(seed.as_bytes().len(), 32);
         assert_eq!(seed.as_u64(), 1);
         assert_eq!(seed.as_u128(), 1);

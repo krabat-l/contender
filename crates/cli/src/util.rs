@@ -85,7 +85,7 @@ pub fn get_spam_pools(testconfig: &TestConfig) -> Vec<String> {
 
 pub fn get_signers_with_defaults(private_keys: Option<Vec<String>>) -> Vec<PrivateKeySigner> {
     if private_keys.is_none() {
-        println!("No private keys provided. Using default private keys.");
+        log::info!("No private keys provided. Using default private keys.");
     }
     let private_keys = private_keys.unwrap_or_default();
     let private_keys = [
@@ -385,7 +385,7 @@ mod test {
 
         for addr in &recipient_addresses {
             let balance = rpc_client.get_balance(*addr).await.unwrap();
-            println!("balance of {}: {}", addr, balance);
+            log::info!("balance of {}: {}", addr, balance);
             assert_eq!(balance, U256::from(ETH_TO_WEI));
         }
 
@@ -399,7 +399,7 @@ mod test {
             min_balance,
         )
         .await;
-        println!("res: {:?}", res);
+        log::info!("res: {:?}", res);
         assert!(res.is_err());
     }
 }

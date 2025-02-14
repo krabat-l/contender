@@ -76,7 +76,7 @@ impl TxGasUsedChart {
                 .data(self.gas_used.iter().map(|&x| (x, 1))),
         )?;
 
-        println!("saved chart to {}", filepath.as_ref());
+        log::info!("saved chart to {}", filepath.as_ref());
         Ok(())
     }
 }

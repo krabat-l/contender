@@ -33,7 +33,7 @@ impl HeatMapChart {
 
             let trace_frame = t.trace.to_owned().try_into_pre_state_frame();
             if let Err(e) = trace_frame {
-                println!("failed to decode frame (preState mode): {:?}", e);
+                log::info!("failed to decode frame (preState mode): {:?}", e);
                 continue;
             }
             let trace_frame = trace_frame.expect("failed to decode frame (preState mode)");
@@ -252,7 +252,7 @@ impl HeatMapChart {
         ))?;
 
         root.present()?;
-        println!("saved chart to {}", filepath.as_ref());
+        log::info!("saved chart to {}", filepath.as_ref());
 
         Ok(())
     }

@@ -126,9 +126,9 @@ pub async fn setup(
     .await?;
 
     scenario.deploy_contracts().await?;
-    println!("Finished deploying contracts. Running setup txs...");
+    log::info!("Finished deploying contracts. Running setup txs...");
     scenario.run_setup().await?;
-    println!("Setup complete. To run the scenario, use the `spam` command.");
+    log::info!("Setup complete. To run the scenario, use the `spam` command.");
 
     Ok(())
 }

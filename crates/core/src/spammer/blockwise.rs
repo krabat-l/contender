@@ -41,7 +41,7 @@ where
             .into_stream()
             .flat_map(futures::stream::iter)
             .map(|b| {
-                println!("new block detected: {:?}", b);
+                log::info!("new block detected: {:?}", b);
                 SpamTrigger::BlockHash(b)
             })
             .boxed())
