@@ -6,6 +6,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use alloy::consensus::TxEnvelope;
+use alloy::eips::eip2718::Encodable2718;
 use alloy::network::AnyNetwork;
 use tokio::sync::{mpsc, oneshot};
 use dashmap::DashMap;
@@ -15,7 +16,8 @@ use web3::{
 use serde::{Deserialize, Serialize};
 use alloy::primitives::{Address, TxHash};
 use alloy::providers::{Provider, ProviderBuilder};
-use alloy::signers::k256::U256;
+use alloy::transports::http::Http;
+use alloy_rpc_client::RpcClient;
 use url::Url;
 use crate::{
     db::{DbOps, RunTx},
@@ -26,6 +28,7 @@ use async_tungstenite::WebSocketStream;
 use chrono::{DateTime, Utc};
 use futures::SinkExt;
 use futures::stream::SplitStream;
+use reqwest::Client;
 use serde_json::Value;
 use crate::generator::types::AnyProvider;
 
@@ -40,25 +43,31 @@ pub struct RpcClientPool {
 }
 impl RpcClientPool {
     pub fn new(rpc_url: Url, pool_size: usize) -> Self {
+        fn _guess_local_url(url: &str) -> bool {
+            url.parse::<Url>().map_or(false, |url| {
+                url.host_str().map_or(true, |host| host == "localhost" || host == "127.0.0.1")
+            })
+        }
+        let is_local = _guess_local_url(rpc_url.as_ref());
         let clients: Vec<Arc<AnyProvider>> = (0..pool_size)
             .map(|_| {
+                let client =
+                        RpcClient::new(Http::with_client(Client::builder()
+                       .pool_max_idle_per_host(100)
+                       .pool_idle_timeout(Some(std::time::Duration::from_secs(5)))
+                       .build()
+                       .expect("Failed to create reqwest client"), rpc_url.clone()), is_local);
                 Arc::new(
                     ProviderBuilder::new()
                         .network::<AnyNetwork>()
-                        .on_http(rpc_url.to_owned())
+                        .on_client(client),
                 )
-            })
-            .collect();
+            }).collect();
 
         Self {
             clients,
             pool_size,
         }
-    }
-
-    pub fn get_client_for_address(&self, num: &usize) -> Arc<AnyProvider> {
-        let index = num % self.pool_size;
-        self.clients[index].clone()
     }
 }
 
@@ -120,7 +129,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 50));
+        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 20));
         let now = Utc::now();
         let tps_file = format!("tps_data_{}.csv", now.format("%Y%m%d_%H%M%S"));
         let mut file = OpenOptions::new()
@@ -336,7 +345,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let addr_bytes = from.to_vec();
                     let prefix = &addr_bytes[0..4];
                     let num = u32::from_be_bytes(prefix.try_into().unwrap());
-                    let index = num as usize % (self.client_pool.pool_size * 4);
+                    let index = num as usize % 2000;
                     client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
                 }
 
@@ -344,8 +353,8 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                     let sent_count_clone = self.sent_count.clone();
                     let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
+                    let pool_size = client_pool_clone.pool_size;
                     tokio::spawn(async move {
-                        let client = client_pool_clone.get_client_for_address(&index);
                         for tx in txs {
                             let start_timestamp = SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -356,7 +365,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
                                 tx_hash: *tx_hash,
                                 start_timestamp: start_timestamp as usize,
                             });
-                            let response = client.send_tx_envelope(tx).await;
+                            let response = client_pool_clone.clients[index % pool_size].send_tx_envelope(tx).await;
                             match response {
                                 Ok(_) => {
                                     sent_count_clone.fetch_add(1, Ordering::Relaxed);
