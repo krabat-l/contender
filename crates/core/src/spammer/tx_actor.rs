@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use alloy::consensus::{Transaction, TxEnvelope};
+use alloy::eips::eip2718::Encodable2718;
 use alloy::network::AnyNetwork;
 use tokio::sync::{mpsc, oneshot};
 use dashmap::DashMap;
@@ -27,9 +28,15 @@ use async_tungstenite::WebSocketStream;
 use chrono::{DateTime, Utc};
 use futures::SinkExt;
 use futures::stream::SplitStream;
-use serde_json::Value;
+use serde_json::{json, Value};
 use crate::generator::types::AnyProvider;
-
+use hyper::body::Body;
+use hyper::{Method, Request, Response};
+use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
+use tokio::sync::Semaphore;
+use http_body_util::Full;
+use bytes::Bytes;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct TransactionSigned {
     pub hash: TxHash,
@@ -99,10 +106,12 @@ struct TxActor<D> where D: DbOps {
     expected_tx_count: usize,
     confirmed_count: usize,
     sent_count: Arc<AtomicUsize>,
-    queue_count: Arc<AtomicUsize>,
     all_run_txs: Vec<RunTx>,
-    client_pool: Arc<RpcClientPool>,
     recent_confirmations: Vec<(usize, usize)>,
+    client: Arc<Client<HttpConnector, Full<Bytes>>>,
+    semaphore: Arc<Semaphore>,
+    rpc_url: String,
+
 }
 
 impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
@@ -120,8 +129,15 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         write.send(async_tungstenite::tungstenite::Message::Text(subscribe_message.into()))
             .await
             .expect("failed to send subscribe message");
-        let client_pool = Arc::new(RpcClientPool::new(rpc_url, 200));
-        let now = Utc::now();
+        let mut connector = HttpConnector::new();
+        connector.set_nodelay(true);
+        connector.set_keepalive(Some(std::time::Duration::from_secs(300)));
+        let client = Client::builder(hyper_util::rt::TokioExecutor::new())
+            .pool_idle_timeout(std::time::Duration::from_secs(300))
+            .pool_max_idle_per_host(2000)
+            .build(connector);
+        let client = Arc::new(client);
+        let semaphore = Arc::new(Semaphore::new(2000));
 
         Self {
             receiver,
@@ -132,10 +148,11 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             expected_tx_count,
             confirmed_count: 0,
             sent_count: Arc::new(AtomicUsize::new(0)),
-            queue_count: Arc::new(AtomicUsize::new(0)),
             all_run_txs: Vec::new(),
-            client_pool,
             recent_confirmations: Vec::new(),
+            client,
+            semaphore,
+            rpc_url: rpc_url.to_string(),
         }
     }
 
@@ -297,6 +314,7 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
         }
         Ok(false)
     }
+
     async fn handle_message(
         &mut self,
         message: TxActorMessage,
@@ -305,54 +323,54 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             TxActorMessage::SentRunTx {
                 tx_groups,
             } => {
-                let queue_num = self.queue_count.load(Ordering::Relaxed);
-                if queue_num != 0 {
-                    log::warn!("There are {} txs not send to client", queue_num);
-                }
-                let mut client_txs = HashMap::new();
-                for (from, txs) in tx_groups.clone() {
-                    let addr_bytes = from.to_vec();
-                    let prefix = &addr_bytes[0..4];
-                    let num = u32::from_be_bytes(prefix.try_into().unwrap());
-                    let index = num as usize % self.client_pool.pool_size;
-                    client_txs.entry(index).or_insert_with(Vec::new).extend(txs.clone());
-                    self.queue_count.fetch_add(txs.len(), Ordering::Relaxed);
-                }
-
-                let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {
+                let tasks: Vec<_> = tx_groups.into_iter().map(|(index, txs)| {
                     let sent_count_clone = self.sent_count.clone();
-                    let client_pool_clone = self.client_pool.clone();
                     let pending_txs_clone = self.pending_txs.clone();
-                    let queue_count = self.queue_count.clone();
+                    let rpc_url = self.rpc_url.clone();
+                    let client = self.client.clone();
                     tokio::spawn(async move{
-                        let client = client_pool_clone.get_client_for_address(&index);
                         for tx in txs.clone() {
                             let start_timestamp = SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .expect("time went backwards")
                                 .as_millis();
+
+                            let mut encoded_tx = vec![];
+                            tx.encode_2718(&mut encoded_tx);
+                            let rlp_hex = alloy::hex::encode_prefixed(encoded_tx);
+                            let body = json!({
+                                "jsonrpc": "2.0",
+                                "method": "eth_sendRawTransaction",
+                                "params": [rlp_hex],
+                                "id": 1
+                            });
+                            let req = hyper::Request::builder()
+                                .method(hyper::Method::POST)
+                                .uri(rpc_url.clone())
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(body.to_string())))
+                                .unwrap();
+                            let response = match client.request(req).await {
+                                Ok(response) => response,
+                                Err(e) => {
+                                    log::error!("Failed to send request: {}", e);
+                                    continue;
+                                }
+                            };
+                            if !response.status().is_success() {
+                                log::error!("Request failed with status: {}", response.status());
+                                continue;
+                            }
+
                             let tx_hash = tx.tx_hash();
+                            sent_count_clone.fetch_add(1, Ordering::Relaxed);
                             pending_txs_clone.insert(*tx_hash, PendingRunTx {
                                 tx_hash: *tx_hash,
                                 start_timestamp: start_timestamp as usize,
                             });
-                            match client.send_tx_envelope(tx).await {
-                                Ok(_) => {
-                                    sent_count_clone.fetch_add(1, Ordering::Relaxed);
-                                    queue_count.fetch_sub(1, Ordering::Relaxed);
-                                },
-                                Err(e) => {
-                                    eprintln!("Error sending transaction: {:?}", e);
-                                    return;
-                                },
-                            }
                         }
                     })
                 }).collect();
-
-                // for task in tasks {
-                //     task.await.unwrap();
-                // }
 
                 if !self.all_run_txs.is_empty() {
                     self.print_stats();
