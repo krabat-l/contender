@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicBool;
 use std::{pin::Pin, sync::Arc};
-
+use std::collections::HashSet;
 use alloy::providers::Provider;
 use futures::Stream;
 use futures::StreamExt;
@@ -13,7 +13,7 @@ use crate::{
     Result,
 };
 
-use super::SpamTrigger;
+use super::{ExecutionPayload, SpamTrigger};
 use super::{tx_actor::TxActorHandle, OnTxSent};
 
 pub trait Spammer<F, D, S, P>
@@ -66,10 +66,29 @@ where
                 .map_err(|e| ContenderError::with_err(e, "failed to get block number"))?;
 
             log::info!("preparing spam txs...");
+            let mut unique_addresses = HashSet::new();
             let mut prepared_payloads = Vec::with_capacity(num_periods);
             for chunk in &tx_req_chunks {
-                prepared_payloads.push(scenario.prepare_spam(chunk).await?);
+                let prepared_payload = scenario.prepare_spam(chunk).await?;
+                prepared_payloads.push(prepared_payload.clone());
+
+                let addresses: Vec<_> = prepared_payload
+                    .iter()
+                    .flat_map(|ex_payload| match ex_payload {
+                        ExecutionPayload::SignedTx(envelope, tx_req) => {
+                            vec![tx_req.tx.from.unwrap_or_default()]
+                        }
+                        ExecutionPayload::SignedTxBundle(_envelopes, tx_reqs) => {todo!()}
+                    })
+                    .collect();
+
+                for address in addresses {
+                    unique_addresses.insert(address);
+                }
             }
+
+            let address_count = unique_addresses.len();
+            log::info!("address count: {}", address_count);
 
             let mut tick = 0;
 
