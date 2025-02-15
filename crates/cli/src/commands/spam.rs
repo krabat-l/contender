@@ -80,7 +80,7 @@ pub async fn spam(
         }
 
         let agent = SignerStore::new_random(
-            signers_per_period * duration / from_pool_declarations.len().max(1),
+            signers_per_period * 4 / from_pool_declarations.len().max(1),
             &rand_seed,
             from_pool,
         );

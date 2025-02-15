@@ -339,15 +339,15 @@ where
             "missing 'from' address in tx request",
             None,
         ))?;
-        // let nonce = self
-        //     .nonces
-        //     .get(&from)
-        //     .ok_or(ContenderError::SetupError(
-        //         "missing nonce for 'from' address",
-        //         Some(from.to_string()),
-        //     ))?
-        //     .to_owned();
-        self.nonces.insert(from.to_owned(), 0);
+        let nonce = self
+            .nonces
+            .get(&from)
+            .ok_or(ContenderError::SetupError(
+                "missing nonce for 'from' address",
+                Some(from.to_string()),
+            ))?
+            .to_owned();
+        self.nonces.insert(from.to_owned(), nonce + 1);
 
         let key = keccak256(tx_req.input.input.to_owned().unwrap_or_default());
 
@@ -377,7 +377,7 @@ where
             .to_owned();
         let full_tx = tx_req
             .to_owned()
-            .with_nonce(0)
+            .with_nonce(nonce)
             .with_max_fee_per_gas(gas_price + (gas_price / 5))
             .with_max_priority_fee_per_gas(gas_price)
             .with_chain_id(self.chain_id)
