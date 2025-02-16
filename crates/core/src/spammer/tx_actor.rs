@@ -332,12 +332,13 @@ impl<D> TxActor<D> where D: DbOps + Send + Sync + 'static {
             } => {
 
                 let mut client_txs = HashMap::new();
-                for (from, txs) in tx_groups {
-                    let addr_bytes = from.to_vec();
-                    let prefix = &addr_bytes[0..4];
-                    let num = u32::from_be_bytes(prefix.try_into().unwrap());
-                    let index = num as usize % self.client_pool.pool_size;
-                    client_txs.entry(index).or_insert_with(Vec::new).extend(txs);
+                let mut txs_iter = tx_groups.values().flat_map(|txs| txs.iter()).cycle();
+                let total_txs = tx_groups.values().map(|txs| txs.len()).sum::<usize>();
+
+                for i in 0..total_txs {
+                    let index = i % self.client_pool.pool_size;
+                    let tx = txs_iter.next().unwrap();
+                    client_txs.entry(index).or_insert_with(Vec::new).push(tx.clone());
                 }
 
                 let tasks: Vec<_> = client_txs.into_iter().map(|(index, txs)| {

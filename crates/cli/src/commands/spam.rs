@@ -70,9 +70,7 @@ pub async fn spam(
     let from_pool_declarations = get_spam_pools(&testconfig);
 
     let mut agents = AgentStore::new();
-    let signers_per_period = args
-        .txs_per_block
-        .unwrap_or(args.txs_per_second.unwrap_or(spam.len()));
+    let signers_per_period = 10;
 
     for from_pool in &from_pool_declarations {
         if agents.has_agent(from_pool) {
@@ -80,7 +78,7 @@ pub async fn spam(
         }
 
         let agent = SignerStore::new_random(
-            signers_per_period * 4 / from_pool_declarations.len().max(1),
+            signers_per_period / from_pool_declarations.len().max(1),
             &rand_seed,
             from_pool,
         );
